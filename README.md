@@ -18,7 +18,7 @@ $ make
 Now open a new terminal window and run the following commands:
 
 ```
-# Enable the Solana secrets plugin
+# Enable the Spiral Safe
 $ make enable
 ```
 

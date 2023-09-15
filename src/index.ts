@@ -1,7 +1,5 @@
 import express, { Request, Response } from 'express';
 import cors from "cors";
-import { AccountInfo, Connection, Keypair, LAMPORTS_PER_SOL, NONCE_ACCOUNT_LENGTH, NonceAccount, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-import { readFileSync } from "fs";
 
 const app = express();
 const port = 3000;
@@ -11,30 +9,6 @@ app.use(express.json());
 
 const vaultAddress = process.env.VAULT_ADDRESS || 'http://127.0.0.1:8200';
 const vaultToken = process.env.ROOT_TOKEN || 'root';
-const solConn = new Connection("https://api.devnet.solana.com", "confirmed");
-
-function retryWithExponentialBackoff(fn, maxAttempts = 5, baseDelayMs = 1000) {
-  let attempt = 1
-
-  const execute = async () => {
-    try {
-      return await fn()
-    } catch (error) {
-      if (attempt >= maxAttempts) {
-        throw error
-      }
-      console.error(error);
-      const delayMs = baseDelayMs * 2 ** attempt
-      console.log(`Retry attempt ${attempt} after ${delayMs}ms`)
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
-
-      attempt++
-      return execute()
-    }
-  }
-
-  return execute()
-}
 
 app.post('/init', async (req: Request, res: Response) => {
   const response = await fetch(`${vaultAddress}/v1/spiral-safe/users`, {
@@ -44,7 +18,7 @@ app.post('/init', async (req: Request, res: Response) => {
       'X-Vault-Token': vaultToken
     },
     body: JSON.stringify({
-      email: req.body.email
+      username: req.body.username
     })
   });
   const json = await response.json();
@@ -52,7 +26,10 @@ app.post('/init', async (req: Request, res: Response) => {
     res.send({ ...json?.data });
   } else {
     console.error(response.status, json);
-    res.sendStatus(500);
+    if (json?.errors[0]?.includes("409")) {
+      return res.sendStatus(409);
+    }
+    return res.sendStatus(500);
   }
 })
 
@@ -67,7 +44,7 @@ app.post('/create', async (req: Request, res: Response) => {
       'X-Vault-Token': vaultToken
     },
     body: JSON.stringify({
-      email: req.body.email,
+      username: req.body.username,
       credential: credResponse
     })
   });
@@ -82,30 +59,27 @@ app.post('/create', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/transaction', async (req: Request, res: Response) => {
-  const fooPublicKey = new PublicKey(req.body.pubKey);
-  let blockInfo = await solConn.getLatestBlockhash("confirmed");
-  const tfTX = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: fooPublicKey,
-      toPubkey: new PublicKey("33wvmHvb3ZQy26QEyfjw5hMJKkFchctsQH2nG2XCbeVk"),
-      lamports: LAMPORTS_PER_SOL / 10,
+app.post('/check', async (req: Request, res: Response) => {
+  const response = await fetch(`${vaultAddress}/v1/spiral-safe/check`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Vault-Token': vaultToken
+    },
+    body: JSON.stringify({
+      username: req.body.username,
     })
-  );
-  tfTX.recentBlockhash = blockInfo.blockhash;
-  tfTX.feePayer = fooPublicKey;
-
-  const tfTX64 = tfTX
-    .serialize({
-      requireAllSignatures: false,
-      verifySignatures: false,
-    })
-    .toString("base64");
-  console.log(
-    "Base64 encoded transaction",
-    tfTX64
-  );
-  return res.send({ rawTx: tfTX64 })
+  });
+  const json = await response.json();
+  if (response.ok) {
+    res.send({ ...json?.data });
+  } else {
+    console.error(response.status, json);
+    if (json?.errors[0]?.includes("404")) {
+      return res.sendStatus(404);
+    }
+    res.sendStatus(500);
+  }
 });
 
 app.post('/signin', async (req: Request, res: Response) => {
@@ -118,7 +92,7 @@ app.post('/signin', async (req: Request, res: Response) => {
       'X-Vault-Token': vaultToken
     },
     body: JSON.stringify({
-      email: req.body.email,
+      username: req.body.username,
       tx: req.body.rawTx,
     })
   });
@@ -142,7 +116,7 @@ app.post('/complete', async (req: Request, res: Response) => {
       'X-Vault-Token': vaultToken
     },
     body: JSON.stringify({
-      email: req.body.email,
+      username: req.body.username,
       credential: credResponse
     })
   });

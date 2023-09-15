@@ -5,23 +5,23 @@ import (
 )
 
 type User struct {
-	Email       string                `json:"email"`
+	Username    string                `json:"username"`
 	PubKey      string                `json:"pubKey"`
 	Credentials []webauthn.Credential `json:"credentials"`
 }
 
 func (u User) WebAuthnID() []byte {
-	return []byte(u.Email)
+	return []byte(u.Username)
 }
 
 // WebAuthnName returns the user's username
 func (u User) WebAuthnName() string {
-	return u.Email
+	return u.Username
 }
 
 // WebAuthnDisplayName returns the user's display name
 func (u User) WebAuthnDisplayName() string {
-	return u.Email
+	return u.Username
 }
 
 // WebAuthnIcon is not (yet) implemented

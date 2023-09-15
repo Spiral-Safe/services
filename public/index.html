@@ -1,229 +1,59 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>WebAuthn Example</title>
+    <title>Spiral Safe Demo</title>
     <script src="https://cdn.jsdelivr.net/gh/ethereumjs/browser-builds/dist/ethereumjs-tx/ethereumjs-tx-1.3.3.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.8.0/cdn/themes/light.css"
+    />
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.8.0/cdn/shoelace-autoloader.js"
+    ></script>
   </head>
   <body>
-    <h1>Login Example</h1>
+    <sl-tab-group>
+      <sl-tab slot="nav" panel="register">Register</sl-tab>
+      <sl-tab slot="nav" panel="sign">Sign Transaction</sl-tab>
 
-    <div>
-      <input id="email" type="text" name="email" value="inbox@saberistic.com" />
-      <button id="register">Register</button>
-      <div>Public Key:</div>
-      <div id="publicKey">Not available</div>
-    </div>
-    <div>
-      <button id="transaction" disabled="true">Get Transaction</button>
-      <div>Pre signing transaction</div>
-      <div id="rawTransaction">Not available</div>
-    </div>
-    <div>
-      <button id="authenticate" disabled="true">Authenticate</button>
-      <div>Signed transaction</div>
-      <div id="signedTransaction">Not available</div>
-    </div>
-
-    <script>
-      let pubKey = "";
-      let rawTx = "";
-      const bf = ethereumjs.Buffer.Buffer;
-      function padString(input) {
-        // const b = ethereumjs.Buffer.Buffer;
-        let segmentLength = 4;
-        let stringLength = input.length;
-        let diff = stringLength % segmentLength;
-
-        if (!diff) {
-          return input;
-        }
-
-        let position = stringLength;
-        let padLength = segmentLength - diff;
-        let paddedStringLength = stringLength + padLength;
-        let buffer = bf.alloc(paddedStringLength);
-
-        buffer.write(input);
-
-        while (padLength--) {
-          buffer.write("=", position++);
-        }
-
-        return buffer.toString();
-      }
-      function base64url_encode(input, encoding = "utf8") {
-        if (bf.isBuffer(input)) {
-          return fromBase64(input.toString("base64"));
-        }
-        return fromBase64(bf.from(input, encoding).toString("base64"));
-      }
-      function base64url_decode(base64url) {
-        return bf.from(toBase64(base64url), "base64");
-      }
-      function toBase64(base64url) {
-        base64url = base64url.toString();
-        return padString(base64url).replace(/\-/g, "+").replace(/_/g, "/");
-      }
-      function fromBase64(base64) {
-        return base64.replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-      }
-      const host = "https://spiralsafe.com/vault-service";
-      // Check if the browser supports WebAuthn
-      if (!window.PublicKeyCredential) {
-        alert("WebAuthn is not supported in this browser.");
-      }
-
-      document
-        .getElementById("register")
-        .addEventListener("click", async () => {
-          const emailInput = document.getElementById("email");
-          // try {
-          let response = await fetch(`${host}/init`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: email.value,
-            }),
-          });
-          let json = await response.json();
-          console.log(json.options.publicKey.challenge.toString());
-          json.options.publicKey.user.id = base64url_decode(
-            json.options.publicKey.user.id
-          );
-          json.options.publicKey.challenge = base64url_decode(
-            json.options.publicKey.challenge.toString()
-          );
-
-          if (json.options.publicKey.excludeCredentials) {
-            for (let cred of json.options.publicKey.excludeCredentials) {
-              cred.id = base64url_decode(cred.id);
-            }
-          }
-          console.log(json);
-          const cred = await navigator.credentials.create(json.options);
-          console.log(cred);
-
-          const credential = {};
-          credential.id = cred.id;
-          credential.rawId = base64url_encode(cred.rawId);
-          credential.type = cred.type;
-
-          if (cred.response) {
-            const clientDataJSON = base64url_encode(
-              cred.response.clientDataJSON
-            );
-            const attestationObject = base64url_encode(
-              cred.response.attestationObject
-            );
-            credential.response = {
-              clientDataJSON,
-              attestationObject,
-            };
-          }
-          console.log(credential);
-
-          response = await fetch(`${host}/create`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: email.value,
-              credential,
-            }),
-          });
-          json = await response.json();
-          console.log(json.data.pubKey);
-          pubKey = json.data.pubKey;
-          document.getElementById("publicKey").textContent = pubKey;
-          document.getElementById("transaction").disabled = false;
-          // } catch (err) {
-          //   console.error(err);
-          // }
-        });
-
-      document
-        .getElementById("transaction")
-        .addEventListener("click", async () => {
-          let response = await fetch(`${host}/transaction`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              pubKey: pubKey,
-            }),
-          });
-          const json = await response.json();
-          console.log(json.rawTx);
-          rawTx = json.rawTx;
-          document.getElementById("rawTransaction").textContent = rawTx;
-          document.getElementById("authenticate").disabled = false;
-        });
-
-      document
-        .getElementById("authenticate")
-        .addEventListener("click", async () => {
-          const emailInput = document.getElementById("email");
-          let response = await fetch(`${host}/signin`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: email.value,
-              rawTx: rawTx,
-            }),
-          });
-          let json = await response.json();
-          json.options.publicKey.challenge = base64url_decode(
-            json.options.publicKey.challenge.toString()
-          );
-
-          for (let cred of json.options.publicKey.allowCredentials) {
-            cred.id = base64url_decode(cred.id);
-          }
-          console.log(json);
-          const cred = await navigator.credentials.get(json.options);
-
-          const credential = {};
-          credential.id = cred.id;
-          credential.type = cred.type;
-          credential.rawId = base64url_encode(cred.rawId);
-
-          if (cred.response) {
-            const clientDataJSON = base64url_encode(
-              cred.response.clientDataJSON
-            );
-            const authenticatorData = base64url_encode(
-              cred.response.authenticatorData
-            );
-            const signature = base64url_encode(cred.response.signature);
-            const userHandle = base64url_encode(cred.response.userHandle);
-            credential.response = {
-              clientDataJSON,
-              authenticatorData,
-              signature,
-              userHandle,
-            };
-          }
-          console.log(credential);
-
-          response = await fetch(`${host}/complete`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: email.value,
-              credential,
-            }),
-          });
-          json = await response.json();
-          document.getElementById("signedTransaction").textContent = json.encodedTX;
-        });
-    </script>
+      <sl-tab-panel name="register">
+        <div>
+          <sl-input
+            id="username-register"
+            type="text"
+            name="username-register"
+            label="Username"
+            help-text="Pick a username"
+          /></sl-input>
+          <sl-divider></sl-divider>
+          <sl-button id="register">Register</sl-button>
+          <sl-details summary="Public Key">
+            <div id="publicKey">Not available</div>
+          </sl-details>
+        </div>
+      </sl-tab-panel>
+      <sl-tab-panel name="sign">
+          <sl-input
+            id="username-sign"
+            type="text"
+            name="username-sign"
+            label="Username"
+            help-text="Type in your username"
+          /></sl-input>
+          <sl-divider></sl-divider>
+          <sl-button id="transaction">Generate sample Transaction</sl-button>
+          <sl-details summary="Pre Signing Transaction">
+            <div id="rawTransaction">Not available</div>
+          </sl-details>
+          <sl-divider></sl-divider>
+          <sl-button id="authenticate" disabled="true">Sign</sl-button>
+          <sl-details summary="Signed Transaction">
+            <div id="signedTransaction">Not available</div>
+          </sl-details>
+      </sl-tab-panel
+      >
+    </sl-tab-group>
+    <script src="browser.js"></script>
   </body>
 </html>

@@ -22,5 +22,8 @@ Now open a new terminal window and run the following commands:
 $ make enable
 ```
 
+## Run with Proxy
+In order to spawn up a demo of the project you could utilize `docker-compose.yaml` file
+
 ## Bussiness Plan
 It could be found [here](https://github.com/spiral-safe/services/blob/main/BusinessPlan.md)

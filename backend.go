@@ -82,37 +82,55 @@ func (b *backend) paths() []*framework.Path {
 			// Pattern: fmt.Sprintf("(?P<%s>.+)/(?P<%s>.+)", "email", "action"),
 			Pattern: "users",
 			Fields: map[string]*framework.FieldSchema{
-				"email": {
+				"username": {
 					Type:        framework.TypeString,
-					Description: "Specifies the email of the secret.",
+					Description: "Specifies the username of the secret.",
 				},
 				"credential": {
 					Type:        framework.TypeMap,
-					Description: "Specifies the email of the secret.",
+					Description: "Specifies the webauthn credential of the secret.",
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
 				logical.CreateOperation: &framework.PathOperation{
 					Callback: b.handleWriteUser,
 				},
+				logical.ReadOperation: &framework.PathOperation{
+					Callback: b.handleReadUser,
+				},
 			},
 
 			ExistenceCheck: b.handleExistenceCheck,
 		},
 		{
+			Pattern: "check",
+			Fields: map[string]*framework.FieldSchema{
+				"username": {
+					Type:        framework.TypeString,
+					Description: "Specifies the username of the secret.",
+				},
+			},
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.CreateOperation: &framework.PathOperation{
+					Callback: b.handleReadUser,
+				},
+			},
+			ExistenceCheck: b.handleExistenceCheck,
+		},
+		{
 			Pattern: "auth",
 			Fields: map[string]*framework.FieldSchema{
-				"email": {
+				"username": {
 					Type:        framework.TypeString,
-					Description: "Specifies the email of the secret.",
+					Description: "Specifies the username of the secret.",
 				},
 				"credential": {
 					Type:        framework.TypeMap,
-					Description: "Specifies the email of the secret.",
+					Description: "Specifies the credential of the secret.",
 				},
 				"tx": {
 					Type:        framework.TypeString,
-					Description: "Specifies the email of the secret.",
+					Description: "Specifies the transaction to sign.",
 				},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -123,6 +141,48 @@ func (b *backend) paths() []*framework.Path {
 			ExistenceCheck: b.handleExistenceCheck,
 		},
 	}
+}
+func (b *backend) handleReadUser(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	resp := &logical.Response{
+		Data: nil,
+	}
+	var username string
+	for k, v := range req.Data {
+		if k == "username" {
+			username = v.(string)
+		}
+	}
+	if username == "" {
+		return nil, fmt.Errorf("username field is missing")
+	}
+	u := User{
+		Username: username,
+	}
+	b.Backend.Logger().Info("Reading on user " + u.Username)
+
+	var v Payload
+	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
+	if err != nil {
+		return nil, err
+	}
+	if entry != nil {
+		dec := gob.NewDecoder(bytes.NewReader(entry.Value))
+		err = dec.Decode(&v)
+		if err != nil {
+			return nil, fmt.Errorf("can't decode value %v", err)
+		}
+		if len(v.User.Credentials) == 0 {
+			return nil, fmt.Errorf("not registed")
+		}
+	} else {
+		return nil, fmt.Errorf("404 not registed")
+	}
+	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
+
+	resp.Data = map[string]interface{}{
+		"pubKey": v.User.PubKey,
+	}
+	return resp, nil
 }
 
 func (b *backend) handleExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
@@ -145,19 +205,19 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 	if len(req.Data) == 0 {
 		return nil, fmt.Errorf("data must be provided to initialize")
 	}
-	var email string
+	var username string
 	for k, v := range req.Data {
-		if k == "email" {
-			email = v.(string)
+		if k == "username" {
+			username = v.(string)
 		}
 	}
-	if email == "" {
-		return nil, fmt.Errorf("email field is missing")
+	if username == "" {
+		return nil, fmt.Errorf("username field is missing")
 	}
 	u := User{
-		Email: email,
+		Username: username,
 	}
-	b.Backend.Logger().Info("Write on user " + u.Email)
+	b.Backend.Logger().Info("Write on user " + u.Username)
 
 	var credential map[string]interface{}
 	for k, v := range req.Data {
@@ -167,7 +227,7 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 	}
 
 	var v Payload
-	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Email)
+	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
 	if err != nil {
 		return nil, err
 	}
@@ -178,13 +238,13 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 			return nil, fmt.Errorf("can't decode value %v", err)
 		}
 		if len(v.User.Credentials) > 0 {
-			return nil, fmt.Errorf("already registed")
+			return nil, fmt.Errorf("409 already registered")
 		}
 	}
 	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
 
 	if len(credential) > 0 {
-		b.Backend.Logger().Info("Completing registration on " + u.Email)
+		b.Backend.Logger().Info("Completing registration on " + u.Username)
 		// b.Backend.Logger().Info(fmt.Sprintf("Credential %v", credential))
 		var ccr protocol.CredentialCreationResponse
 		data, err := json.Marshal(credential)
@@ -214,12 +274,12 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 		}
 
 	} else {
-		b.Backend.Logger().Info("Registering " + u.Email)
+		b.Backend.Logger().Info("Registering " + u.Username)
 		if v.PrivateKey == nil {
 			acct := types.NewAccount()
 			v.PrivateKey = acct.PrivateKey
 			v.User.PubKey = acct.PublicKey.ToBase58()
-			v.User.Email = u.Email
+			v.User.Username = u.Username
 			b.Backend.Logger().Info("Creating key " + v.User.PubKey)
 		}
 
@@ -244,7 +304,7 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 		}
 
 		entry = &logical.StorageEntry{
-			Key:      req.ClientToken + "/" + email,
+			Key:      req.ClientToken + "/" + username,
 			Value:    buf.Bytes(),
 			SealWrap: false,
 		}
@@ -271,19 +331,19 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 	if len(req.Data) == 0 {
 		return nil, fmt.Errorf("data must be provided to initialize")
 	}
-	var email string
+	var username string
 	for k, v := range req.Data {
-		if k == "email" {
-			email = v.(string)
+		if k == "username" {
+			username = v.(string)
 		}
 	}
-	if email == "" {
-		return nil, fmt.Errorf("email field is missing")
+	if username == "" {
+		return nil, fmt.Errorf("username field is missing")
 	}
 	u := User{
-		Email: email,
+		Username: username,
 	}
-	b.Backend.Logger().Info("Write on auth " + u.Email)
+	b.Backend.Logger().Info("Write on auth " + u.Username)
 
 	var credential map[string]interface{}
 	for k, v := range req.Data {
@@ -293,7 +353,7 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 	}
 
 	var v Payload
-	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Email)
+	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +367,7 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
 
 	if len(credential) > 0 {
-		b.Backend.Logger().Info("Completing signin on " + u.Email)
+		b.Backend.Logger().Info("Completing signin on " + u.Username)
 		// b.Backend.Logger().Info(fmt.Sprintf("Credential %v", credential))
 		var car protocol.CredentialAssertionResponse
 		data, err := json.Marshal(credential)
@@ -360,7 +420,7 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 		}
 
 	} else {
-		b.Backend.Logger().Info("Signing in " + u.Email)
+		b.Backend.Logger().Info("Signing in " + u.Username)
 		if v.PrivateKey == nil {
 			return nil, fmt.Errorf("haven't registered before")
 		}
@@ -401,7 +461,7 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 		}
 
 		entry = &logical.StorageEntry{
-			Key:      req.ClientToken + "/" + email,
+			Key:      req.ClientToken + "/" + username,
 			Value:    buf.Bytes(),
 			SealWrap: false,
 		}

@@ -44,8 +44,8 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 
 	wconfig := &webauthn.Config{
 		RPDisplayName: "Spiral Safe",
-		RPID:          "spiralsafe.com",
-		RPOrigins:     []string{"https://spiralsafe.com", "https://www.spiralsafe.com"},
+		RPID:          "localhost",
+		RPOrigins:     []string{"http://localhost:9080"},
 	}
 
 	w, err := webauthn.New(wconfig)

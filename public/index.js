@@ -61,7 +61,7 @@ function toBase64(base64url) {
 function fromBase64(base64) {
   return base64.replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
-const host = "https://spiralsafe.com/vault-service";
+const host = "http://localhost:3000";
 // Check if the browser supports WebAuthn
 if (!window.PublicKeyCredential) {
   alert("WebAuthn is not supported in this browser.");

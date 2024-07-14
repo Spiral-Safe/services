@@ -1,0 +1,15 @@
+Nitriding example
+=================
+
+This directory contains Hashicorp vault application with Spiral Safe plugin loaded in a Nitro Enclave.  The project's
+[Dockerfile](Dockerfile) adds the nitriding standalone executable along with the
+enclave application, consisting of the
+[Go](backend.go)
+and a
+[shell script](start.sh)
+that invokes nitriding in the background, followed by running the vault and spiral safe plugin.
+
+To build the nitriding executable, the Docker image, the enclave image, and
+finally run the enclave image, simply run:
+
+    make

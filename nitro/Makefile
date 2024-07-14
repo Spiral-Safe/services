@@ -47,3 +47,11 @@ run: $(image_eif)
 .PHONY: clean
 clean:
 	rm -f $(image_tar) $(image_eif)
+
+.PHONY: register
+register:
+	vault plugin register --header=X-VAULT-TOKEN=xxxx -sha256=bfed59074e64cc71fc407ed53bb5fbfa18c8735541ebbd48578f121de2a984ff -version=v1.0.0 secret spiral-safe
+
+.PHONY: enable
+enable:
+	vault secrets enable --header=X-VAULT-TOKEN=XXXX -path=spiral-safe spiral-safe

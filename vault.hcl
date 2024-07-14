@@ -6,7 +6,7 @@
             cluster_address = "[::]:8201"
           }
           storage "file" {
-            path = "/home/saber/code/solana-secret-engine/vault/data"
+            path = "/vault/data"
           }
 
-          plugin_directory = "/home/saber/code/solana-secret-engine/vault/plugins"
+          plugin_directory = "/vault/plugins"

@@ -18,9 +18,17 @@ import (
 	"github.com/portto/solana-go-sdk/types"
 )
 
+type WebAuthnInterface interface {
+	BeginRegistration(user webauthn.User, options ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error)
+	CreateCredential(user webauthn.User, sessionData webauthn.SessionData, response *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error)
+	BeginLogin(user webauthn.User, options ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error)
+	ValidateLogin(user webauthn.User, sessionData webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error)
+}
+
 type backend struct {
 	*framework.Backend
-	webauthn *webauthn.WebAuthn
+	webauthn WebAuthnInterface
+	mocked   bool
 }
 
 type Payload struct {
@@ -33,7 +41,7 @@ type Payload struct {
 var _ logical.Factory = Factory
 
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
-	b, err := newBackend()
+	b, err := newBackend(false)
 	if err != nil {
 		return nil, err
 	}
@@ -41,6 +49,16 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 	if conf == nil {
 		return nil, fmt.Errorf("configuration passed into backend is nil")
 	}
+
+	if err := b.Setup(ctx, conf); err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func newBackend(mocked bool) (*backend, error) {
+	b := &backend{}
 
 	wconfig := &webauthn.Config{
 		RPDisplayName: "Spiral Safe",
@@ -53,16 +71,7 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 		return nil, err
 	}
 	b.webauthn = w
-
-	if err := b.Setup(ctx, conf); err != nil {
-		return nil, err
-	}
-
-	return b, nil
-}
-
-func newBackend() (*backend, error) {
-	b := &backend{}
+	b.mocked = mocked
 
 	b.Backend = &framework.Backend{
 		Help:        strings.TrimSpace(solanaSecretEngineHelp),
@@ -319,6 +328,50 @@ func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, dat
 
 }
 
+func (b *backend) parseAuthData(car protocol.CredentialAssertionResponse) (*protocol.ParsedCredentialAssertionData, error) {
+	parsedResponse, err := car.Parse()
+	if b.mocked {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse, %s", err.Error())
+	}
+	return parsedResponse, nil
+}
+
+func (b *backend) signTx(v Payload) (string, error) {
+	if b.mocked {
+		return "testtx", nil
+	}
+
+	acct, err := types.AccountFromBytes(v.PrivateKey)
+	if err != nil {
+		return "", err
+	}
+
+	tx, err := types.TransactionDeserialize(v.Transaction)
+	if err != nil {
+		signature := acct.Sign(v.Transaction)
+		return base64.StdEncoding.EncodeToString(signature), nil
+	}
+
+	msg, err := tx.Message.Serialize()
+	if err != nil {
+		return "", fmt.Errorf("failed serializing message")
+	}
+	signature := acct.Sign(msg)
+	err = tx.AddSignature(signature)
+	if err != nil {
+		return "", fmt.Errorf("failed adding signature")
+	}
+	serializedTX, err := tx.Serialize()
+	if err != nil {
+		return "", fmt.Errorf("failed serializing transaction")
+	}
+	encodedTX := base64.StdEncoding.EncodeToString(serializedTX)
+	return encodedTX, nil
+}
+
 func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	b.Backend.Logger().Info("Write on auth ")
 	resp := &logical.Response{
@@ -381,7 +434,7 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 
 		b.Backend.Logger().Info(fmt.Sprintf("Attestation Response %v", car))
 
-		parsedResponse, err := car.Parse()
+		parsedResponse, err := b.parseAuthData(car)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse, %s", err.Error())
 		}
@@ -390,28 +443,10 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, dat
 			return nil, fmt.Errorf("failed to create creds, %s", err)
 		}
 
-		tx, err := types.TransactionDeserialize(v.Transaction)
+		encodedTX, err := b.signTx(v)
 		if err != nil {
-			return nil, fmt.Errorf("failed deserializing transaction")
+			return nil, fmt.Errorf("failed to sign tx, %s", err.Error())
 		}
-		acct, err := types.AccountFromBytes(v.PrivateKey)
-		if err != nil {
-			return nil, err
-		}
-		msg, err := tx.Message.Serialize()
-		if err != nil {
-			return nil, fmt.Errorf("failed serializing message")
-		}
-		signature := acct.Sign(msg)
-		err = tx.AddSignature(signature)
-		if err != nil {
-			return nil, fmt.Errorf("failed adding signature")
-		}
-		serializedTX, err := tx.Serialize()
-		if err != nil {
-			return nil, fmt.Errorf("failed serializing transaction")
-		}
-		encodedTX := base64.StdEncoding.EncodeToString(serializedTX)
 
 		resp.Data = map[string]interface{}{
 			"pubKey":     v.User.PubKey,

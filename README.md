@@ -1,4 +1,6 @@
 # Spiral Safe
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FSpiral-Safe%2Fservices.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FSpiral-Safe%2Fservices?ref=badge_shield)
+
 
 # Development purposes only, this has not been audited yet
 
@@ -27,3 +29,7 @@ In order to spawn up a demo of the project you could utilize `docker-compose.yam
 
 ## Bussiness Plan
 It could be found [here](https://github.com/spiral-safe/services/blob/main/BusinessPlan.md)
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FSpiral-Safe%2Fservices.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FSpiral-Safe%2Fservices?ref=badge_large)

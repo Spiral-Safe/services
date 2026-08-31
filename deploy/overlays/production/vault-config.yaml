@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/part-of: spiral-safe
+data:
+  vault.hcl: |
+    ui = false
+    disable_mlock = true
+    cluster_name = "spiral-safe"
+    plugin_directory = "/vault/plugins"
+
+    listener "tcp" {
+      address = "[::]:8200"
+      cluster_address = "[::]:8201"
+      tls_cert_file = "/vault/tls/tls.crt"
+      tls_key_file = "/vault/tls/tls.key"
+      tls_client_ca_file = "/vault/tls/ca.crt"
+      telemetry {
+        unauthenticated_metrics_access = false
+      }
+    }
+
+    storage "raft" {
+      path = "/vault/data"
+
+      retry_join {
+        leader_api_addr = "https://vault-0.vault-internal:8200"
+        leader_tls_servername = "vault-internal"
+        leader_ca_cert_file = "/vault/tls/ca.crt"
+        leader_client_cert_file = "/vault/tls/tls.crt"
+        leader_client_key_file = "/vault/tls/tls.key"
+      }
+
+      retry_join {
+        leader_api_addr = "https://vault-1.vault-internal:8200"
+        leader_tls_servername = "vault-internal"
+        leader_ca_cert_file = "/vault/tls/ca.crt"
+        leader_client_cert_file = "/vault/tls/tls.crt"
+        leader_client_key_file = "/vault/tls/tls.key"
+      }
+
+      retry_join {
+        leader_api_addr = "https://vault-2.vault-internal:8200"
+        leader_tls_servername = "vault-internal"
+        leader_ca_cert_file = "/vault/tls/ca.crt"
+        leader_client_cert_file = "/vault/tls/tls.crt"
+        leader_client_key_file = "/vault/tls/tls.key"
+      }
+    }
+
+    seal "awskms" {}
+
+    service_registration "kubernetes" {}
+
+    telemetry {
+      disable_hostname = true
+      prometheus_retention_time = "30s"
+    }

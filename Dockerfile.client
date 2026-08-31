@@ -1,8 +1,16 @@
-FROM node:latest
+FROM node:22@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d AS builder
 WORKDIR /client
-COPY package.json .
-COPY package-lock.json .
-RUN npm i
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY public/ public/
+RUN npm run build:client
+
+FROM node:22@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d
+WORKDIR /client
+ENV NODE_ENV=production
+ENV CLIENT_HOST=0.0.0.0
+COPY --chown=node:node scripts/serve-static.mjs ./scripts/serve-static.mjs
+COPY --chown=node:node --from=builder /client/public ./public
 EXPOSE 9080
-ENTRYPOINT ["npm", "run", "serve"]
+USER node
+ENTRYPOINT ["node", "scripts/serve-static.mjs"]

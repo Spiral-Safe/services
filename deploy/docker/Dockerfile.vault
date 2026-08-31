@@ -1,0 +1,22 @@
+FROM golang:1.26@sha256:e30143be198ab04cf7ba25fba83ab3a692ca584c994aad0bf131fa0eb32dd8c1 AS plugin-builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY *.go ./
+COPY cmd ./cmd
+RUN mkdir -p /out \
+    && target_arch="${TARGETARCH:-$(go env GOARCH)}" \
+    && CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${target_arch}" \
+       go build -mod=readonly -trimpath -o /out/spiral-safe ./cmd/spiral-safe
+
+FROM hashicorp/vault:1.21.4@sha256:4e33b126a59c0c333b76fb4e894722462659a6bec7c48c9ee8cea56fccfd2569
+
+COPY --from=plugin-builder --chown=vault:vault /out/spiral-safe /vault/plugins/spiral-safe
+COPY LICENSE /licenses/spiral-safe-Apache-2.0.txt
+
+USER vault
+CMD ["server", "-config=/vault/config/vault.hcl"]

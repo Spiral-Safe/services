@@ -1,246 +1,245 @@
-let pubKey = "";
-let rawTx = "";
-const bf = ethereumjs.Buffer.Buffer;
-function notify(
-  message,
-  variant = "primary",
-  icon = "info-circle",
-  duration = 3000
-) {
-  const alert1 = Object.assign(document.createElement("sl-alert"), {
-    variant,
-    closable: true,
-    duration: duration,
-    innerHTML: `
-        <sl-icon name="${icon}" slot="icon"></sl-icon>
-        ${message}
-      `,
+let signingPayload = "";
+let signingOperation = "transaction";
+let authenticationCeremonyId = "";
+
+let host = "";
+let hostError = "";
+try {
+  host = resolveServiceOrigin();
+} catch (error) {
+  hostError = error instanceof Error ? error.message : "Invalid API origin";
+}
+
+function notify(message, variant = "primary", _icon, duration = 4000) {
+  const region = document.getElementById("notifications");
+  const alert = document.createElement("div");
+  alert.className = `notice ${variant}`;
+  alert.setAttribute("role", variant === "danger" ? "alert" : "status");
+  alert.textContent = String(message);
+  region.append(alert);
+  window.setTimeout(() => alert.remove(), duration);
+  return alert;
+}
+
+function resolveServiceOrigin() {
+  const candidate =
+    new URLSearchParams(window.location.search).get("api") ||
+    "http://localhost:3000";
+  const url = new URL(candidate);
+  const loopback = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+  if (
+    url.protocol !== "http:" ||
+    !loopback.has(url.hostname) ||
+    url.hostname !== window.location.hostname ||
+    url.username ||
+    url.password ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "The local demo API must be a plain-HTTP loopback origin on the same host.",
+    );
+  }
+  return url.origin;
+}
+
+function bytesToBase64(bytes) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = "";
+  for (let offset = 0; offset < view.length; offset += 0x8000) {
+    binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function bytesToBase64URL(bytes) {
+  return bytesToBase64(bytes)
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function base64URLToBytes(value) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+}
+
+function apiToken() {
+  return document.getElementById("api-token").value;
+}
+
+async function apiFetch(path, body) {
+  if (!host) throw new Error(hostError || "The local API origin is invalid");
+  const response = await fetch(`${host}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
-
-  document.body.append(alert1);
-  try {
-    return alert1.toast();
-  } catch (err) {}
-}
-function padString(input) {
-  // const b = ethereumjs.Buffer.Buffer;
-  let segmentLength = 4;
-  let stringLength = input.length;
-  let diff = stringLength % segmentLength;
-
-  if (!diff) {
-    return input;
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      json?.error?.message || `${path} failed with status ${response.status}`,
+    );
   }
+  return json;
+}
 
-  let position = stringLength;
-  let padLength = segmentLength - diff;
-  let paddedStringLength = stringLength + padLength;
-  let buffer = bf.alloc(paddedStringLength);
-
-  buffer.write(input);
-
-  while (padLength--) {
-    buffer.write("=", position++);
+function prepareCreationOptions(options) {
+  options.publicKey.user.id = base64URLToBytes(options.publicKey.user.id);
+  options.publicKey.challenge = base64URLToBytes(options.publicKey.challenge);
+  for (const credential of options.publicKey.excludeCredentials || []) {
+    credential.id = base64URLToBytes(credential.id);
   }
+  return options;
+}
 
-  return buffer.toString();
-}
-function base64url_encode(input, encoding = "utf8") {
-  if (bf.isBuffer(input)) {
-    return fromBase64(input.toString("base64"));
+function prepareAssertionOptions(options) {
+  options.publicKey.challenge = base64URLToBytes(options.publicKey.challenge);
+  for (const credential of options.publicKey.allowCredentials || []) {
+    credential.id = base64URLToBytes(credential.id);
   }
-  return fromBase64(bf.from(input, encoding).toString("base64"));
+  return options;
 }
-function base64url_decode(base64url) {
-  return bf.from(toBase64(base64url), "base64");
+
+function serializeCreationCredential(credential) {
+  return {
+    id: credential.id,
+    rawId: bytesToBase64URL(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: bytesToBase64URL(credential.response.clientDataJSON),
+      attestationObject: bytesToBase64URL(
+        credential.response.attestationObject,
+      ),
+    },
+  };
 }
-function toBase64(base64url) {
-  base64url = base64url.toString();
-  return padString(base64url).replace(/\-/g, "+").replace(/_/g, "/");
+
+function serializeAssertionCredential(credential) {
+  const response = {
+    clientDataJSON: bytesToBase64URL(credential.response.clientDataJSON),
+    authenticatorData: bytesToBase64URL(credential.response.authenticatorData),
+    signature: bytesToBase64URL(credential.response.signature),
+  };
+  if (credential.response.userHandle) {
+    response.userHandle = bytesToBase64URL(credential.response.userHandle);
+  }
+  return {
+    id: credential.id,
+    rawId: bytesToBase64URL(credential.rawId),
+    type: credential.type,
+    response,
+  };
 }
-function fromBase64(base64) {
-  return base64.replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-}
-const host = "http://localhost:3000";
-// Check if the browser supports WebAuthn
+
 if (!window.PublicKeyCredential) {
-  alert("WebAuthn is not supported in this browser.");
+  notify("WebAuthn is not supported in this browser.", "danger");
 }
 
 document.getElementById("register").addEventListener("click", async () => {
-  const usernameInput = document.getElementById("username-register");
-  let response = await fetch(`${host}/init`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username: usernameInput.value,
-    }),
-  });
-  if (response.status === 409) {
-    notify("Already registered", "danger");
-    return;
-  } else if (response.status === 200) {
-    let json = await response.json();
-    console.log(json.options.publicKey.challenge.toString());
-    json.options.publicKey.user.id = base64url_decode(
-      json.options.publicKey.user.id
+  try {
+    const username = document.getElementById("username-register").value;
+    const chain = document.getElementById("chain-register").value;
+    const initialized = await apiFetch("/init", { username, chain });
+    if (!initialized.ceremonyId)
+      throw new Error("Backend did not bind the registration ceremony");
+    const credential = await navigator.credentials.create(
+      prepareCreationOptions(initialized.options),
     );
-    json.options.publicKey.challenge = base64url_decode(
-      json.options.publicKey.challenge.toString()
-    );
-
-    if (json.options.publicKey.excludeCredentials) {
-      for (let cred of json.options.publicKey.excludeCredentials) {
-        cred.id = base64url_decode(cred.id);
-      }
-    }
-    console.log(json);
-    const cred = await navigator.credentials.create(json.options);
-    console.log(cred);
-
-    const credential = {};
-    credential.id = cred.id;
-    credential.rawId = base64url_encode(cred.rawId);
-    credential.type = cred.type;
-
-    if (cred.response) {
-      const clientDataJSON = base64url_encode(cred.response.clientDataJSON);
-      const attestationObject = base64url_encode(
-        cred.response.attestationObject
-      );
-      credential.response = {
-        clientDataJSON,
-        attestationObject,
-      };
-    }
-    console.log(credential);
-
-    response = await fetch(`${host}/create`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        username: usernameInput.value,
-        credential,
-      }),
+    const created = await apiFetch("/create", {
+      username,
+      chain,
+      ceremonyId: initialized.ceremonyId,
+      credential: serializeCreationCredential(credential),
     });
-    console.log(response.status);
-    if (response.status === 200) {
-      json = await response.json();
-      console.log(json.data.pubKey);
-      pubKey = json.data.pubKey;
-      document.getElementById("publicKey").textContent = pubKey;
-      document.getElementById("username-sign").value = usernameInput.value;
-      notify("Successfully registered", "success");
-      return;
-    }
+    document.getElementById("publicKey").textContent = created.address;
+    document.getElementById("username-sign").value = username;
+    document.getElementById("chain-sign").value = chain;
+    notify(`Registered ${chain} wallet`, "success");
+  } catch (error) {
+    notify(error.message, "danger");
   }
 });
 
 document.getElementById("transaction").addEventListener("click", async () => {
-  const usernameInput = document.getElementById("username-sign");
-  let response = await fetch(`${host}/check`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username: usernameInput.value,
-    }),
-  });
-  if (response.status === 404) {
-    notify("Not registered", "danger");
-    return;
-  }
-  let json = await response.json();
-  console.log(json);
-  const fooPublicKey = new solanaWeb3.PublicKey(json.pubKey);
-  const solConn = new solanaWeb3.Connection(
-    "https://api.devnet.solana.com",
-    "confirmed"
-  );
-  let blockInfo = await solConn.getLatestBlockhash("confirmed");
-  const tfTX = new solanaWeb3.Transaction().add(
-    solanaWeb3.SystemProgram.transfer({
-      fromPubkey: fooPublicKey,
-      toPubkey: new solanaWeb3.PublicKey(
-        "33wvmHvb3ZQy26QEyfjw5hMJKkFchctsQH2nG2XCbeVk"
-      ),
-      lamports: solanaWeb3.LAMPORTS_PER_SOL / 10,
-    })
-  );
-  tfTX.recentBlockhash = blockInfo.blockhash;
-  tfTX.feePayer = fooPublicKey;
+  try {
+    const username = document.getElementById("username-sign").value;
+    const chain = document.getElementById("chain-sign").value;
+    const wallet = await apiFetch("/check", { username, chain });
 
-  rawTx = tfTX
-    .serialize({
-      requireAllSignatures: false,
-      verifySignatures: false,
-    })
-    .toString("base64");
-  document.getElementById("rawTransaction").textContent = rawTx;
-  document.getElementById("authenticate").disabled = false;
-  notify("Created the transaction", "success");
+    if (chain === "ethereum") {
+      const message = document.getElementById("message").value;
+      if (!message) throw new Error("Enter an Ethereum message to sign");
+      signingPayload = bytesToBase64(new TextEncoder().encode(message));
+      signingOperation = "message";
+    } else {
+      const publicKey = new solanaWeb3.PublicKey(wallet.address);
+      const connection = new solanaWeb3.Connection(
+        "https://api.devnet.solana.com",
+        "confirmed",
+      );
+      const blockInfo = await connection.getLatestBlockhash("confirmed");
+      const transaction = new solanaWeb3.Transaction().add(
+        solanaWeb3.SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: new solanaWeb3.PublicKey(
+            "33wvmHvb3ZQy26QEyfjw5hMJKkFchctsQH2nG2XCbeVk",
+          ),
+          lamports: solanaWeb3.LAMPORTS_PER_SOL / 10,
+        }),
+      );
+      transaction.recentBlockhash = blockInfo.blockhash;
+      transaction.feePayer = publicKey;
+      signingPayload = transaction
+        .serialize({ requireAllSignatures: false, verifySignatures: false })
+        .toString("base64");
+      signingOperation = "transaction";
+    }
+
+    document.getElementById("rawTransaction").textContent = signingPayload;
+    document.getElementById("authenticate").disabled = false;
+    notify(`Prepared ${chain} ${signingOperation}`, "success");
+  } catch (error) {
+    notify(error.message, "danger");
+  }
 });
 
 document.getElementById("authenticate").addEventListener("click", async () => {
-  const usernameInput = document.getElementById("username-sign");
-  let response = await fetch(`${host}/signin`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username: usernameInput.value,
-      rawTx: rawTx,
-    }),
-  });
-  let json = await response.json();
-  json.options.publicKey.challenge = base64url_decode(
-    json.options.publicKey.challenge.toString()
-  );
-
-  for (let cred of json.options.publicKey.allowCredentials) {
-    cred.id = base64url_decode(cred.id);
+  try {
+    const username = document.getElementById("username-sign").value;
+    const chain = document.getElementById("chain-sign").value;
+    const started = await apiFetch("/signin", {
+      username,
+      chain,
+      operation: signingOperation,
+      payload: signingPayload,
+    });
+    authenticationCeremonyId = started.ceremonyId;
+    if (!authenticationCeremonyId)
+      throw new Error("Backend did not bind the signing ceremony");
+    const credential = await navigator.credentials.get(
+      prepareAssertionOptions(started.options),
+    );
+    const completed = await apiFetch("/complete", {
+      username,
+      chain,
+      ceremonyId: authenticationCeremonyId,
+      credential: serializeAssertionCredential(credential),
+    });
+    authenticationCeremonyId = "";
+    document.getElementById("signedTransaction").textContent =
+      completed.encodedTX || completed.signature;
+    notify(`Signed ${chain} ${signingOperation}`, "success");
+  } catch (error) {
+    authenticationCeremonyId = "";
+    notify(error.message, "danger");
   }
-  console.log(json);
-  const cred = await navigator.credentials.get(json.options);
-
-  const credential = {};
-  credential.id = cred.id;
-  credential.type = cred.type;
-  credential.rawId = base64url_encode(cred.rawId);
-
-  if (cred.response) {
-    const clientDataJSON = base64url_encode(cred.response.clientDataJSON);
-    const authenticatorData = base64url_encode(cred.response.authenticatorData);
-    const signature = base64url_encode(cred.response.signature);
-    const userHandle = base64url_encode(cred.response.userHandle);
-    credential.response = {
-      clientDataJSON,
-      authenticatorData,
-      signature,
-      userHandle,
-    };
-  }
-  console.log(credential);
-
-  response = await fetch(`${host}/complete`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username: usernameInput.value,
-      credential,
-    }),
-  });
-  json = await response.json();
-  document.getElementById("signedTransaction").textContent = json.encodedTX;
-  notify("Signed the transaction", "success");
-  return;
 });
-notify("Welcome", "primary");
+
+if (hostError) notify(hostError, "danger", undefined, 10_000);
+else notify("Local development demo ready", "primary");

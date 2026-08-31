@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spiral-safe
+  labels:
+    app.kubernetes.io/part-of: spiral-safe
+    kubernetes.io/metadata.name: spiral-safe

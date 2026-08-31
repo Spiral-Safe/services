@@ -1,9 +1,17 @@
-FROM node:latest
+FROM node:22@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d AS builder
 WORKDIR /service
-COPY package.json .
-COPY package-lock.json .
-RUN npm i
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY tsconfig.json .
 COPY src ./src
+RUN npm run build
+
+FROM node:22@sha256:8a34c4ab3ea2c5cd194f07e317b2a8f09461d3c8b05c4e34c8ccd56d56024c4d
+WORKDIR /service
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY --chown=node:node --from=builder /service/dist ./dist
 EXPOSE 3000
-ENTRYPOINT ["npm", "run", "dev"]
+USER node
+ENTRYPOINT ["node", "dist/index.js"]

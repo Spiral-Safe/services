@@ -1,23 +1,19 @@
-ui = true
-cluster_addr = "http://127.0.0.1:8201"
-api_addr      = "https://127.0.0.1:8200"
+ui = false
 disable_mlock = true
-
-listener "tcp" {
-    tls_disable = 1
-    address = "0.0.0.0:8200"
-    cluster_address = "0.0.0.0:8201"
-}
-storage "raft" {
-  path = "/vault/"
-  node_id = "raft_node_1"
-}
-
+api_addr = "http://127.0.0.1:8200"
+cluster_addr = "http://127.0.0.1:8201"
 plugin_directory = "/vault/plugins"
 
-seal "awskms" {
-    region     = "us-east-2"
-    access_key = ""
-    secret_key = ""
-    kms_key_id = "5ccb4727-8f87-4e65-a84d-7676e7d97f21"
+listener "tcp" {
+  address = "127.0.0.1:8200"
+  cluster_address = "127.0.0.1:8201"
+  tls_disable = 1
+}
+
+# Nitro Enclaves do not provide persistent storage. This Raft directory makes
+# the adapter bootable, but it is destroyed with the enclave and must not hold
+# production keys without an attested external persistence protocol.
+storage "raft" {
+  path = "/vault/data"
+  node_id = "spiral-safe-enclave"
 }

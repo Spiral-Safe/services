@@ -3,19 +3,22 @@ package solana_se
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"log"
+	"os"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
-	"github.com/portto/solana-go-sdk/types"
 )
 
 type WebAuthnInterface interface {
@@ -27,490 +30,584 @@ type WebAuthnInterface interface {
 
 type backend struct {
 	*framework.Backend
-	webauthn WebAuthnInterface
-	mocked   bool
+	webauthn   WebAuthnInterface
+	mocked     bool
+	ceremonyMu sync.Mutex
 }
 
+type SigningRequest struct {
+	Chain     string
+	Operation string
+	Payload   []byte
+}
+
+type Ceremony struct {
+	Kind           string
+	WebAuthSession webauthn.SessionData
+	Pending        *SigningRequest
+	ExpiresAt      time.Time
+}
+
+// Payload is gob encoded in Vault logical storage. The legacy PrivateKey and
+// Transaction fields remain to decode records created by the original plugin.
 type Payload struct {
-	PrivateKey     []byte                `json:"privateKey"`
-	WebAuthSession *webauthn.SessionData `json:"webAuth"`
+	PrivateKey     []byte
+	WebAuthSession *webauthn.SessionData
 	User           User
 	Transaction    []byte
+	Chain          string
+	Address        string
+	Pending        *SigningRequest
+	Ceremonies     map[string]Ceremony
 }
 
-var _ logical.Factory = Factory
+var (
+	_              logical.Factory = Factory
+	identityRegexp                 = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._@-]{0,63})$`)
+)
 
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
 	b, err := newBackend(false)
 	if err != nil {
 		return nil, err
 	}
-
 	if conf == nil {
 		return nil, fmt.Errorf("configuration passed into backend is nil")
 	}
-
 	if err := b.Setup(ctx, conf); err != nil {
 		return nil, err
 	}
-
 	return b, nil
 }
 
 func newBackend(mocked bool) (*backend, error) {
-	b := &backend{}
-
-	wconfig := &webauthn.Config{
-		RPDisplayName: "Spiral Safe",
-		RPID:          "localhost",
-		RPOrigins:     []string{"http://localhost:9080"},
+	rpID := strings.TrimSpace(os.Getenv("WEBAUTHN_RP_ID"))
+	if rpID == "" {
+		rpID = "localhost"
+	}
+	origins := splitNonEmpty(os.Getenv("WEBAUTHN_RP_ORIGINS"))
+	if len(origins) == 0 {
+		origins = []string{"http://localhost:9080"}
 	}
 
-	w, err := webauthn.New(wconfig)
+	w, err := webauthn.New(&webauthn.Config{
+		RPDisplayName: "Spiral Safe",
+		RPID:          rpID,
+		RPOrigins:     origins,
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			UserVerification: protocol.VerificationRequired,
+		},
+	})
 	if err != nil {
 		return nil, err
 	}
-	b.webauthn = w
-	b.mocked = mocked
 
+	b := &backend{webauthn: w, mocked: mocked}
 	b.Backend = &framework.Backend{
-		Help:        strings.TrimSpace(solanaSecretEngineHelp),
+		Help:        strings.TrimSpace(secretEngineHelp),
 		BackendType: logical.TypeLogical,
-		Paths: framework.PathAppend(
-			b.paths(),
-		),
+		Paths:       b.paths(),
 	}
-
 	return b, nil
 }
 
+func splitNonEmpty(value string) []string {
+	var values []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
+}
+
+func identityFields() map[string]*framework.FieldSchema {
+	return map[string]*framework.FieldSchema{
+		"tenant": {
+			Type:        framework.TypeString,
+			Description: "Server-authenticated tenant identifier.",
+		},
+		"username": {
+			Type:        framework.TypeString,
+			Description: "Tenant-local user identifier.",
+		},
+		"chain": {
+			Type:        framework.TypeString,
+			Default:     ChainSolana,
+			Description: "Wallet chain (solana or ethereum).",
+		},
+	}
+}
+
 func (b *backend) paths() []*framework.Path {
+	userFields := identityFields()
+	userFields["credential"] = &framework.FieldSchema{
+		Type:        framework.TypeMap,
+		Description: "WebAuthn credential creation response.",
+	}
+	userFields["ceremonyId"] = &framework.FieldSchema{
+		Type:        framework.TypeString,
+		Description: "Opaque registration ceremony identifier.",
+	}
+	authFields := identityFields()
+	authFields["credential"] = &framework.FieldSchema{
+		Type:        framework.TypeMap,
+		Description: "WebAuthn credential assertion response.",
+	}
+	authFields["ceremonyId"] = &framework.FieldSchema{
+		Type:        framework.TypeString,
+		Description: "Opaque authentication ceremony identifier.",
+	}
+	authFields["operation"] = &framework.FieldSchema{
+		Type:        framework.TypeString,
+		Default:     OperationTransaction,
+		Description: "Signing operation (transaction or message).",
+	}
+	authFields["payload"] = &framework.FieldSchema{
+		Type:        framework.TypeString,
+		Description: "Standard-base64 payload to sign.",
+	}
+	authFields["tx"] = &framework.FieldSchema{
+		Type:        framework.TypeString,
+		Description: "Legacy alias for payload.",
+	}
+
 	return []*framework.Path{
 		{
-			// Pattern: framework.MatchAllRegex("email"),
-			// Pattern: fmt.Sprintf("(?P<%s>.+)/(?P<%s>.+)", "email", "action"),
 			Pattern: "users",
-			Fields: map[string]*framework.FieldSchema{
-				"username": {
-					Type:        framework.TypeString,
-					Description: "Specifies the username of the secret.",
-				},
-				"credential": {
-					Type:        framework.TypeMap,
-					Description: "Specifies the webauthn credential of the secret.",
-				},
-			},
+			Fields:  userFields,
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.CreateOperation: &framework.PathOperation{
-					Callback: b.handleWriteUser,
-				},
-				logical.ReadOperation: &framework.PathOperation{
-					Callback: b.handleReadUser,
-				},
+				logical.CreateOperation: &framework.PathOperation{Callback: b.handleWriteUser},
+				logical.UpdateOperation: &framework.PathOperation{Callback: b.handleWriteUser},
+				logical.ReadOperation:   &framework.PathOperation{Callback: b.handleReadUser},
 			},
-
 			ExistenceCheck: b.handleExistenceCheck,
 		},
 		{
 			Pattern: "check",
-			Fields: map[string]*framework.FieldSchema{
-				"username": {
-					Type:        framework.TypeString,
-					Description: "Specifies the username of the secret.",
-				},
-			},
+			Fields:  identityFields(),
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.CreateOperation: &framework.PathOperation{
-					Callback: b.handleReadUser,
-				},
+				logical.CreateOperation: &framework.PathOperation{Callback: b.handleReadUser},
+				logical.UpdateOperation: &framework.PathOperation{Callback: b.handleReadUser},
 			},
 			ExistenceCheck: b.handleExistenceCheck,
 		},
 		{
 			Pattern: "auth",
-			Fields: map[string]*framework.FieldSchema{
-				"username": {
-					Type:        framework.TypeString,
-					Description: "Specifies the username of the secret.",
-				},
-				"credential": {
-					Type:        framework.TypeMap,
-					Description: "Specifies the credential of the secret.",
-				},
-				"tx": {
-					Type:        framework.TypeString,
-					Description: "Specifies the transaction to sign.",
-				},
-			},
+			Fields:  authFields,
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.CreateOperation: &framework.PathOperation{
-					Callback: b.handleWriteAuth,
-				},
+				logical.CreateOperation: &framework.PathOperation{Callback: b.handleWriteAuth},
+				logical.UpdateOperation: &framework.PathOperation{Callback: b.handleWriteAuth},
 			},
 			ExistenceCheck: b.handleExistenceCheck,
 		},
 	}
 }
-func (b *backend) handleReadUser(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	resp := &logical.Response{
-		Data: nil,
+
+func (b *backend) handleExistenceCheck(ctx context.Context, req *logical.Request, _ *framework.FieldData) (bool, error) {
+	identity, err := parseIdentity(req)
+	if err != nil {
+		return false, err
 	}
-	var username string
-	for k, v := range req.Data {
-		if k == "username" {
-			username = v.(string)
+	_, found, err := loadPayload(ctx, req.Storage, identity)
+	return found, err
+}
+
+type requestIdentity struct {
+	Tenant   string
+	Username string
+	Chain    string
+}
+
+func parseIdentity(req *logical.Request) (requestIdentity, error) {
+	identity := requestIdentity{
+		Tenant:   stringValue(req.Data, "tenant"),
+		Username: stringValue(req.Data, "username"),
+		Chain:    normalizeChain(stringValue(req.Data, "chain")),
+	}
+	if !identityRegexp.MatchString(identity.Tenant) {
+		return requestIdentity{}, fmt.Errorf("tenant must be 1-64 safe identifier characters")
+	}
+	if !identityRegexp.MatchString(identity.Username) {
+		return requestIdentity{}, fmt.Errorf("username must be 1-64 safe identifier characters")
+	}
+	if _, err := signerFor(identity.Chain); err != nil {
+		return requestIdentity{}, err
+	}
+	return identity, nil
+}
+
+func stringValue(data map[string]interface{}, key string) string {
+	value, _ := data[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func mapValue(data map[string]interface{}, key string) map[string]interface{} {
+	value, _ := data[key].(map[string]interface{})
+	return value
+}
+
+func storageKey(identity requestIdentity) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return "tenants/" + encode([]byte(identity.Tenant)) + "/users/" +
+		encode([]byte(identity.Username)) + "/chains/" + encode([]byte(identity.Chain))
+}
+
+func webAuthnUserID(identity requestIdentity) string {
+	digest := sha256.Sum256([]byte(identity.Tenant + "\x00" + identity.Username + "\x00" + identity.Chain))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func loadPayload(ctx context.Context, storage logical.Storage, identity requestIdentity) (Payload, bool, error) {
+	entry, err := storage.Get(ctx, storageKey(identity))
+	if err != nil {
+		return Payload{}, false, err
+	}
+	if entry == nil {
+		return Payload{}, false, nil
+	}
+	var payload Payload
+	if err := gob.NewDecoder(bytes.NewReader(entry.Value)).Decode(&payload); err != nil {
+		return Payload{}, false, fmt.Errorf("decode wallet: %w", err)
+	}
+	return payload, true, nil
+}
+
+func savePayload(ctx context.Context, storage logical.Storage, identity requestIdentity, payload Payload) error {
+	var buffer bytes.Buffer
+	if err := gob.NewEncoder(&buffer).Encode(payload); err != nil {
+		return fmt.Errorf("encode wallet: %w", err)
+	}
+	return storage.Put(ctx, &logical.StorageEntry{
+		Key:      storageKey(identity),
+		Value:    buffer.Bytes(),
+		SealWrap: true,
+	})
+}
+
+const (
+	ceremonyRegistration   = "registration"
+	ceremonyAuthentication = "authentication"
+	ceremonyLifetime       = 2 * time.Minute
+	maxPendingCeremonies   = 8
+)
+
+func addCeremony(payload *Payload, kind string, session *webauthn.SessionData, pending *SigningRequest) (string, error) {
+	if session == nil {
+		return "", fmt.Errorf("WebAuthn session is missing")
+	}
+	if payload.Ceremonies == nil {
+		payload.Ceremonies = make(map[string]Ceremony)
+	}
+	now := time.Now().UTC()
+	for id, ceremony := range payload.Ceremonies {
+		if !ceremony.ExpiresAt.After(now) {
+			delete(payload.Ceremonies, id)
 		}
 	}
-	if username == "" {
-		return nil, fmt.Errorf("username field is missing")
+	if len(payload.Ceremonies) >= maxPendingCeremonies {
+		return "", fmt.Errorf("too many pending WebAuthn ceremonies")
 	}
-	u := User{
-		Username: username,
+	randomID := make([]byte, 32)
+	if _, err := rand.Read(randomID); err != nil {
+		return "", fmt.Errorf("generate ceremony identifier: %w", err)
 	}
-	b.Backend.Logger().Info("Reading on user " + u.Username)
+	id := base64.RawURLEncoding.EncodeToString(randomID)
+	payload.Ceremonies[id] = Ceremony{
+		Kind:           kind,
+		WebAuthSession: *session,
+		Pending:        pending,
+		ExpiresAt:      now.Add(ceremonyLifetime),
+	}
+	return id, nil
+}
 
-	var v Payload
-	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
+func consumeCeremony(payload *Payload, id, kind string) (Ceremony, error) {
+	if id == "" {
+		return Ceremony{}, fmt.Errorf("ceremonyId is required")
+	}
+	ceremony, ok := payload.Ceremonies[id]
+	if !ok {
+		return Ceremony{}, fmt.Errorf("WebAuthn ceremony was not found or was already consumed")
+	}
+	delete(payload.Ceremonies, id)
+	if ceremony.Kind != kind {
+		return Ceremony{}, fmt.Errorf("WebAuthn ceremony type does not match request")
+	}
+	if !ceremony.ExpiresAt.After(time.Now().UTC()) {
+		return Ceremony{}, fmt.Errorf("WebAuthn ceremony expired")
+	}
+	return ceremony, nil
+}
+
+func walletResponse(payload Payload) map[string]interface{} {
+	response := map[string]interface{}{
+		"chain":   payload.Chain,
+		"address": payload.Address,
+	}
+	if payload.Chain == ChainSolana {
+		response["pubKey"] = payload.Address
+	}
+	return response
+}
+
+func (b *backend) handleReadUser(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	identity, err := parseIdentity(req)
 	if err != nil {
 		return nil, err
 	}
-	if entry != nil {
-		dec := gob.NewDecoder(bytes.NewReader(entry.Value))
-		err = dec.Decode(&v)
-		if err != nil {
-			return nil, fmt.Errorf("can't decode value %v", err)
-		}
-		if len(v.User.Credentials) == 0 {
-			return nil, fmt.Errorf("not registed")
-		}
-	} else {
-		return nil, fmt.Errorf("404 not registed")
-	}
-	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
-
-	resp.Data = map[string]interface{}{
-		"pubKey": v.User.PubKey,
-	}
-	return resp, nil
-}
-
-func (b *backend) handleExistenceCheck(ctx context.Context, req *logical.Request, data *framework.FieldData) (bool, error) {
-	out, err := req.Storage.Get(ctx, req.Path)
-	if err != nil {
-		return false, errwrap.Wrapf("existence check failed: {{err}}", err)
-	}
-
-	return out != nil, nil
-}
-
-func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	resp := &logical.Response{
-		Data: nil,
-	}
-	if req.ClientToken == "" {
-		return nil, fmt.Errorf("client token empty")
-	}
-
-	if len(req.Data) == 0 {
-		return nil, fmt.Errorf("data must be provided to initialize")
-	}
-	var username string
-	for k, v := range req.Data {
-		if k == "username" {
-			username = v.(string)
-		}
-	}
-	if username == "" {
-		return nil, fmt.Errorf("username field is missing")
-	}
-	u := User{
-		Username: username,
-	}
-	b.Backend.Logger().Info("Write on user " + u.Username)
-
-	var credential map[string]interface{}
-	for k, v := range req.Data {
-		if k == "credential" {
-			credential = v.(map[string]interface{})
-		}
-	}
-
-	var v Payload
-	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
+	payload, found, err := loadPayload(ctx, req.Storage, identity)
 	if err != nil {
 		return nil, err
 	}
-	if entry != nil {
-		dec := gob.NewDecoder(bytes.NewReader(entry.Value))
-		err = dec.Decode(&v)
-		if err != nil {
-			return nil, fmt.Errorf("can't decode value %v", err)
-		}
-		if len(v.User.Credentials) > 0 {
-			return nil, fmt.Errorf("409 already registered")
-		}
+	if !found {
+		return nil, fmt.Errorf("404 wallet not registered")
 	}
-	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
-
-	if len(credential) > 0 {
-		b.Backend.Logger().Info("Completing registration on " + u.Username)
-		// b.Backend.Logger().Info(fmt.Sprintf("Credential %v", credential))
-		var ccr protocol.CredentialCreationResponse
-		data, err := json.Marshal(credential)
-		if err != nil {
-			return nil, fmt.Errorf("can't marshal credential %v", err)
-		}
-		err = json.Unmarshal(data, &ccr)
-		if err != nil {
-			return nil, fmt.Errorf("can't unmarshal credential %v", err)
-		}
-
-		b.Backend.Logger().Info(fmt.Sprintf("Attestation Response %v", ccr))
-
-		parsedResponse, err := ccr.Parse()
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse, %s", err.Error())
-		}
-		credential, err := b.webauthn.CreateCredential(v.User, *v.WebAuthSession, parsedResponse)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create creds, %s", err)
-		}
-		v.User.AddCredential(*credential)
-
-		resp.Data = map[string]interface{}{
-			"pubKey":      v.User.PubKey,
-			"credentials": v.User.Credentials,
-		}
-
-	} else {
-		b.Backend.Logger().Info("Registering " + u.Username)
-		if v.PrivateKey == nil {
-			acct := types.NewAccount()
-			v.PrivateKey = acct.PrivateKey
-			v.User.PubKey = acct.PublicKey.ToBase58()
-			v.User.Username = u.Username
-			b.Backend.Logger().Info("Creating key " + v.User.PubKey)
-		}
-
-		options, session, err := b.webauthn.BeginRegistration(v.User)
-		if err != nil {
-			return nil, err
-		}
-		resp.Data = map[string]interface{}{
-			"pubKey":  v.User.PubKey,
-			"options": options,
-		}
-
-		v.WebAuthSession = session
+	if len(payload.User.Credentials) == 0 {
+		return nil, fmt.Errorf("409 registration incomplete")
 	}
-
-	if v.User.PubKey != "" {
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(v)
-		if err != nil {
-			log.Fatalf("Error encoding struct: %v", err)
-		}
-
-		entry = &logical.StorageEntry{
-			Key:      req.ClientToken + "/" + username,
-			Value:    buf.Bytes(),
-			SealWrap: false,
-		}
-		if err := req.Storage.Put(ctx, entry); err != nil {
-			return nil, err
-		}
-	}
-
-	b.Backend.Logger().Info("succeeded!!!")
-
-	return resp, nil
-
+	b.Backend.Logger().Info("wallet lookup", "tenant", identity.Tenant, "chain", identity.Chain)
+	return &logical.Response{Data: walletResponse(payload)}, nil
 }
 
-func (b *backend) parseAuthData(car protocol.CredentialAssertionResponse) (*protocol.ParsedCredentialAssertionData, error) {
-	parsedResponse, err := car.Parse()
+func (b *backend) handleWriteUser(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	identity, err := parseIdentity(req)
+	if err != nil {
+		return nil, err
+	}
+	b.ceremonyMu.Lock()
+	defer b.ceremonyMu.Unlock()
+	payload, found, err := loadPayload(ctx, req.Storage, identity)
+	if err != nil {
+		return nil, err
+	}
+	credential := mapValue(req.Data, "credential")
+	ceremonyID := stringValue(req.Data, "ceremonyId")
+
+	if len(credential) == 0 {
+		if ceremonyID != "" {
+			return nil, fmt.Errorf("credential is required to complete registration ceremony")
+		}
+		if found && len(payload.User.Credentials) > 0 {
+			return nil, fmt.Errorf("409 wallet already registered")
+		}
+		if !found {
+			signer, _ := signerFor(identity.Chain)
+			privateKey, address, err := signer.Generate()
+			if err != nil {
+				return nil, err
+			}
+			payload = Payload{
+				PrivateKey: privateKey,
+				Chain:      identity.Chain,
+				Address:    address,
+				User: User{
+					// WebAuthn user handles must be at most 64 bytes. Keep a
+					// deterministic, tenant-scoped identity without exposing the
+					// concatenated identifiers to the authenticator.
+					ID:       webAuthnUserID(identity),
+					Username: identity.Username,
+					PubKey:   address,
+				},
+			}
+		}
+		options, session, err := b.webauthn.BeginRegistration(payload.User)
+		if err != nil {
+			return nil, fmt.Errorf("begin WebAuthn registration: %w", err)
+		}
+		ceremonyID, err := addCeremony(&payload, ceremonyRegistration, session, nil)
+		if err != nil {
+			return nil, err
+		}
+		response := walletResponse(payload)
+		response["options"] = options
+		response["ceremonyId"] = ceremonyID
+		if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+			return nil, err
+		}
+		b.Backend.Logger().Info("registration started", "tenant", identity.Tenant, "chain", identity.Chain)
+		return &logical.Response{Data: response}, nil
+	}
+
+	if !found {
+		return nil, fmt.Errorf("404 registration was not initialized")
+	}
+	if len(payload.User.Credentials) > 0 {
+		return nil, fmt.Errorf("409 wallet already registered")
+	}
+	ceremony, err := consumeCeremony(&payload, ceremonyID, ceremonyRegistration)
+	if err != nil {
+		return nil, err
+	}
+	// Persist one-time consumption before validating attacker-controlled data.
+	if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+		return nil, err
+	}
+	parsed, err := parseCreationCredential(credential)
+	if err != nil {
+		return nil, err
+	}
+	created, err := b.webauthn.CreateCredential(payload.User, ceremony.WebAuthSession, parsed)
+	if err != nil {
+		return nil, fmt.Errorf("validate WebAuthn registration: %w", err)
+	}
+	payload.User.AddCredential(*created)
+	if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+		return nil, err
+	}
+	b.Backend.Logger().Info("registration completed", "tenant", identity.Tenant, "chain", identity.Chain)
+	return &logical.Response{Data: walletResponse(payload)}, nil
+}
+
+func parseCreationCredential(credential map[string]interface{}) (*protocol.ParsedCredentialCreationData, error) {
+	data, err := json.Marshal(credential)
+	if err != nil {
+		return nil, fmt.Errorf("marshal credential: %w", err)
+	}
+	var response protocol.CredentialCreationResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("decode credential: %w", err)
+	}
+	parsed, err := response.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parse credential: %w", err)
+	}
+	return parsed, nil
+}
+
+func (b *backend) parseAssertionCredential(credential map[string]interface{}) (*protocol.ParsedCredentialAssertionData, error) {
 	if b.mocked {
 		return nil, nil
 	}
+	data, err := json.Marshal(credential)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse, %s", err.Error())
+		return nil, fmt.Errorf("marshal credential: %w", err)
 	}
-	return parsedResponse, nil
+	var response protocol.CredentialAssertionResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("decode credential: %w", err)
+	}
+	parsed, err := response.Parse()
+	if err != nil {
+		return nil, fmt.Errorf("parse credential: %w", err)
+	}
+	return parsed, nil
 }
 
-func (b *backend) signTx(v Payload) (string, error) {
-	if b.mocked {
-		return "testtx", nil
-	}
-
-	acct, err := types.AccountFromBytes(v.PrivateKey)
-	if err != nil {
-		return "", err
-	}
-
-	tx, err := types.TransactionDeserialize(v.Transaction)
-	if err != nil {
-		signature := acct.Sign(v.Transaction)
-		return base64.StdEncoding.EncodeToString(signature), nil
-	}
-
-	msg, err := tx.Message.Serialize()
-	if err != nil {
-		return "", fmt.Errorf("failed serializing message")
-	}
-	signature := acct.Sign(msg)
-	err = tx.AddSignature(signature)
-	if err != nil {
-		return "", fmt.Errorf("failed adding signature")
-	}
-	serializedTX, err := tx.Serialize()
-	if err != nil {
-		return "", fmt.Errorf("failed serializing transaction")
-	}
-	encodedTX := base64.StdEncoding.EncodeToString(serializedTX)
-	return encodedTX, nil
-}
-
-func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	b.Backend.Logger().Info("Write on auth ")
-	resp := &logical.Response{
-		Data: nil,
-	}
-	if req.ClientToken == "" {
-		return nil, fmt.Errorf("client token empty")
-	}
-
-	if len(req.Data) == 0 {
-		return nil, fmt.Errorf("data must be provided to initialize")
-	}
-	var username string
-	for k, v := range req.Data {
-		if k == "username" {
-			username = v.(string)
-		}
-	}
-	if username == "" {
-		return nil, fmt.Errorf("username field is missing")
-	}
-	u := User{
-		Username: username,
-	}
-	b.Backend.Logger().Info("Write on auth " + u.Username)
-
-	var credential map[string]interface{}
-	for k, v := range req.Data {
-		if k == "credential" {
-			credential = v.(map[string]interface{})
-		}
-	}
-
-	var v Payload
-	entry, err := req.Storage.Get(ctx, req.ClientToken+"/"+u.Username)
+func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+	identity, err := parseIdentity(req)
 	if err != nil {
 		return nil, err
 	}
-	if entry != nil {
-		dec := gob.NewDecoder(bytes.NewReader(entry.Value))
-		err = dec.Decode(&v)
-		if err != nil {
-			return nil, fmt.Errorf("can't decode value %v", err)
-		}
+	b.ceremonyMu.Lock()
+	defer b.ceremonyMu.Unlock()
+	payload, found, err := loadPayload(ctx, req.Storage, identity)
+	if err != nil {
+		return nil, err
 	}
-	b.Backend.Logger().Info(fmt.Sprintf("User %v", v.User))
+	if !found || len(payload.User.Credentials) == 0 {
+		return nil, fmt.Errorf("404 wallet not registered")
+	}
+	credential := mapValue(req.Data, "credential")
+	ceremonyID := stringValue(req.Data, "ceremonyId")
 
-	if len(credential) > 0 {
-		b.Backend.Logger().Info("Completing signin on " + u.Username)
-		// b.Backend.Logger().Info(fmt.Sprintf("Credential %v", credential))
-		var car protocol.CredentialAssertionResponse
-		data, err := json.Marshal(credential)
-		if err != nil {
-			return nil, fmt.Errorf("can't marshal credential %v", err)
+	if len(credential) == 0 {
+		if ceremonyID != "" {
+			return nil, fmt.Errorf("credential is required to complete authentication ceremony")
 		}
-		err = json.Unmarshal(data, &car)
-		if err != nil {
-			return nil, fmt.Errorf("can't unmarshal credential %v", err)
+		operation := normalizeOperation(stringValue(req.Data, "operation"))
+		encodedPayload := stringValue(req.Data, "payload")
+		if encodedPayload == "" {
+			encodedPayload = stringValue(req.Data, "tx")
 		}
-
-		b.Backend.Logger().Info(fmt.Sprintf("Attestation Response %v", car))
-
-		parsedResponse, err := b.parseAuthData(car)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse, %s", err.Error())
+		if encodedPayload == "" {
+			return nil, fmt.Errorf("payload must be standard base64")
 		}
-		credential, err := b.webauthn.ValidateLogin(v.User, *v.WebAuthSession, parsedResponse)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create creds, %s", err)
+		rawPayload, err := base64.StdEncoding.DecodeString(encodedPayload)
+		if err != nil || len(rawPayload) == 0 {
+			return nil, fmt.Errorf("payload must be non-empty standard base64")
 		}
-
-		encodedTX, err := b.signTx(v)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign tx, %s", err.Error())
+		if operation != OperationMessage && operation != OperationTransaction {
+			return nil, fmt.Errorf("operation must be transaction or message")
 		}
-
-		resp.Data = map[string]interface{}{
-			"pubKey":     v.User.PubKey,
-			"credential": credential,
-			"encodedTX":  encodedTX,
+		if identity.Chain == ChainEthereum && operation != OperationMessage {
+			return nil, fmt.Errorf("Ethereum currently supports EIP-191 message signing only")
 		}
-
-	} else {
-		b.Backend.Logger().Info("Signing in " + u.Username)
-		if v.PrivateKey == nil {
-			return nil, fmt.Errorf("haven't registered before")
-		}
-
-		var base64TX string
-		for k, v := range req.Data {
-			if k == "tx" {
-				base64TX = v.(string)
+		for _, registered := range payload.User.Credentials {
+			if registered.Authenticator.CloneWarning {
+				return nil, fmt.Errorf("WebAuthn credential is disabled after a signature-counter regression")
 			}
 		}
-		if len(base64TX) == 0 {
-			return nil, fmt.Errorf("tx must be provided to sign")
-		}
-		rawDecoded, err := base64.StdEncoding.DecodeString(base64TX)
-		if err != nil {
-			return nil, fmt.Errorf("tx is not base64 encoded")
-		}
-		v.Transaction = rawDecoded
 
-		options, session, err := b.webauthn.BeginLogin(v.User)
+		options, session, err := b.webauthn.BeginLogin(payload.User)
+		if err != nil {
+			return nil, fmt.Errorf("begin WebAuthn authentication: %w", err)
+		}
+		pending := &SigningRequest{Chain: identity.Chain, Operation: operation, Payload: rawPayload}
+		ceremonyID, err := addCeremony(&payload, ceremonyAuthentication, session, pending)
 		if err != nil {
 			return nil, err
 		}
-		resp.Data = map[string]interface{}{
-			"pubKey":  v.User.PubKey,
-			"options": options,
-		}
-
-		v.WebAuthSession = session
-	}
-
-	if v.User.PubKey != "" {
-		var buf bytes.Buffer
-		enc := gob.NewEncoder(&buf)
-		err = enc.Encode(v)
-		if err != nil {
-			log.Fatalf("Error encoding struct: %v", err)
-		}
-
-		entry = &logical.StorageEntry{
-			Key:      req.ClientToken + "/" + username,
-			Value:    buf.Bytes(),
-			SealWrap: false,
-		}
-		if err := req.Storage.Put(ctx, entry); err != nil {
+		if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
 			return nil, err
 		}
+		response := walletResponse(payload)
+		response["options"] = options
+		response["ceremonyId"] = ceremonyID
+		b.Backend.Logger().Info("authentication started", "tenant", identity.Tenant, "chain", identity.Chain, "operation", operation)
+		return &logical.Response{Data: response}, nil
 	}
 
-	b.Backend.Logger().Info("succeeded!!!")
-
-	return resp, nil
-
+	ceremony, err := consumeCeremony(&payload, ceremonyID, ceremonyAuthentication)
+	if err != nil {
+		return nil, err
+	}
+	if ceremony.Pending == nil {
+		return nil, fmt.Errorf("authentication ceremony has no signing request")
+	}
+	// Persist one-time consumption before validating attacker-controlled data.
+	if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+		return nil, err
+	}
+	parsed, err := b.parseAssertionCredential(credential)
+	if err != nil {
+		return nil, err
+	}
+	validated, err := b.webauthn.ValidateLogin(payload.User, ceremony.WebAuthSession, parsed)
+	if err != nil {
+		return nil, fmt.Errorf("validate WebAuthn authentication: %w", err)
+	}
+	payload.User.UpdateCredential(*validated)
+	if validated.Authenticator.CloneWarning {
+		if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("WebAuthn signature counter regressed; credential disabled")
+	}
+	signer, err := signerFor(ceremony.Pending.Chain)
+	if err != nil {
+		return nil, err
+	}
+	result, err := signer.Sign(payload.PrivateKey, ceremony.Pending.Payload, ceremony.Pending.Operation)
+	if err != nil {
+		return nil, fmt.Errorf("sign payload: %w", err)
+	}
+	response := walletResponse(payload)
+	if result.EncodedTransaction != "" {
+		response["encodedTX"] = result.EncodedTransaction
+	}
+	if result.Signature != "" {
+		response["signature"] = result.Signature
+	}
+	payload.Transaction = nil
+	if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
+		return nil, err
+	}
+	b.Backend.Logger().Info("payload signed", "tenant", identity.Tenant, "chain", identity.Chain)
+	return &logical.Response{Data: response}, nil
 }
 
-const solanaSecretEngineHelp = `
-The Solana Secrent Engine backend is a secrets backend that creates accounts and signs transactions.
+const secretEngineHelp = `
+The Spiral Safe secrets engine creates chain-specific keys and releases
+signatures only after a successful WebAuthn assertion.
 `

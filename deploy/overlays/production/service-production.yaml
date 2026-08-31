@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spiral-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: service
+          env:
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/spiral-safe/vault/ca.crt
+          volumeMounts:
+            - name: vault-ca
+              mountPath: /var/run/secrets/spiral-safe/vault
+              readOnly: true
+      volumes:
+        - name: vault-ca
+          secret:
+            secretName: vault-tls
+            items:
+              - key: ca.crt
+                path: ca.crt
+            defaultMode: 0444

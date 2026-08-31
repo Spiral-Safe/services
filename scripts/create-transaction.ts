@@ -1,107 +1,99 @@
 import {
-  PublicKey,
   Connection,
-  LAMPORTS_PER_SOL,
   Keypair,
-  Transaction,
-  SystemProgram,
-  NonceAccount,
-  sendAndConfirmRawTransaction,
+  LAMPORTS_PER_SOL,
   NONCE_ACCOUNT_LENGTH,
-  sendAndConfirmTransaction,
+  NonceAccount,
+  PublicKey,
+  SystemProgram,
+  Transaction,
 } from "@solana/web3.js";
-import { readFileSync } from "fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 
-function wait(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+const connection = new Connection("https://api.devnet.solana.com", "confirmed");
+
+async function main(): Promise<void> {
+  const keypairPath =
+    process.env.SOLANA_KEYPAIR || resolve(homedir(), ".config/solana/id.json");
+  const authority = Keypair.fromSecretKey(
+    new Uint8Array(JSON.parse(await readFile(keypairPath, "utf8"))),
+  );
+  const nonce = Keypair.generate();
+  const wallet = new PublicKey(
+    process.env.SPIRAL_SAFE_SOLANA_ADDRESS ||
+      "DMwkaqFxdcgytj7i8fshcGYXTHLUMDQezwkeeg6ebxpf",
+  );
+  const recipient = new PublicKey(
+    process.env.SOLANA_RECIPIENT ||
+      "2ocFY4FUppAFoVnApmyxk8nh7Ft1dMuVwrJx5bqKKdEU",
+  );
+
+  const airdropSignature = await connection.requestAirdrop(
+    wallet,
+    LAMPORTS_PER_SOL,
+  );
+  const block = await connection.getLatestBlockhash("confirmed");
+  await connection.confirmTransaction(
+    { signature: airdropSignature, ...block },
+    "finalized",
+  );
+
+  const initializeNonce = new Transaction().add(
+    SystemProgram.createAccount({
+      fromPubkey: authority.publicKey,
+      newAccountPubkey: nonce.publicKey,
+      lamports:
+        await connection.getMinimumBalanceForRentExemption(
+          NONCE_ACCOUNT_LENGTH,
+        ),
+      space: NONCE_ACCOUNT_LENGTH,
+      programId: SystemProgram.programId,
+    }),
+    SystemProgram.nonceInitialize({
+      noncePubkey: nonce.publicKey,
+      authorizedPubkey: authority.publicKey,
+    }),
+  );
+  await connection.sendTransaction(initializeNonce, [authority, nonce]);
+
+  let nonceInfo;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const accountInfo = await connection.getAccountInfo(
+      nonce.publicKey,
+      "confirmed",
+    );
+    if (accountInfo) {
+      nonceInfo = NonceAccount.fromAccountData(accountInfo.data);
+      break;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  if (!nonceInfo) throw new Error("nonce account was not confirmed");
+
+  const transaction = new Transaction().add(
+    SystemProgram.nonceAdvance({
+      authorizedPubkey: authority.publicKey,
+      noncePubkey: nonce.publicKey,
+    }),
+    SystemProgram.transfer({
+      fromPubkey: wallet,
+      toPubkey: recipient,
+      lamports: LAMPORTS_PER_SOL / 100,
+    }),
+  );
+  transaction.recentBlockhash = nonceInfo.nonce;
+  transaction.feePayer = wallet;
+  transaction.partialSign(authority);
+  console.log(
+    transaction
+      .serialize({ requireAllSignatures: false, verifySignatures: false })
+      .toString("base64"),
+  );
 }
 
-describe("make a transaction", () => {
-
-  const solConn = new Connection("https://api.devnet.solana.com", "confirmed");
-
-  let nonce = Keypair.generate();
-  const file = "/home/saber/.config/solana/id.json";
-  const authority = Keypair.fromSecretKey(
-    new Uint8Array(JSON.parse(readFileSync(file).toString()))
-  );
-  //   let authority = Keypair.generate();
-  let fooPubKey = new PublicKey("DMwkaqFxdcgytj7i8fshcGYXTHLUMDQezwkeeg6ebxpf");
-  let recipientPubKey = new PublicKey(
-    "2ocFY4FUppAFoVnApmyxk8nh7Ft1dMuVwrJx5bqKKdEU"
-  );
-
-    it("should airdrop", async () => {
-      let airdropSig = await solConn.requestAirdrop(
-        fooPubKey,
-        LAMPORTS_PER_SOL * 1
-      );
-      let blockInfo = await solConn.getLatestBlockhash("confirmed");
-      await solConn.confirmTransaction(
-        {
-          signature: airdropSig,
-          blockhash: blockInfo.blockhash,
-          lastValidBlockHeight: blockInfo.lastValidBlockHeight,
-        },
-        "finalized"
-      );
-      console.log(`airdropped 1 SOL to ${fooPubKey.toBase58()}`);
-    });
-  it("should initialize nonce", async () => {
-    let tx = new Transaction().add(
-      // create nonce account
-      SystemProgram.createAccount({
-        fromPubkey: authority.publicKey,
-        newAccountPubkey: nonce.publicKey,
-        lamports: await solConn.getMinimumBalanceForRentExemption(
-          NONCE_ACCOUNT_LENGTH
-        ),
-        space: NONCE_ACCOUNT_LENGTH,
-        programId: SystemProgram.programId,
-      }),
-      // init nonce account
-      SystemProgram.nonceInitialize({
-        noncePubkey: nonce.publicKey, // nonce account pubkey
-        authorizedPubkey: authority.publicKey, // nonce account authority (for advance and close)
-      })
-    );
-    console.log(
-      `nonce init hash: ${await solConn.sendTransaction(tx, [
-        authority,
-        nonce,
-      ])}`
-    );
-  });
-
-  it("should create a transfer transaction", async () => {
-    await wait(3000);
-    console.log(nonce.publicKey.toBase58());
-    let accountInfo = await solConn.getAccountInfo(nonce.publicKey, "confirmed");
-    let nonceAccount = NonceAccount.fromAccountData(accountInfo.data);
-
-    const tx = new Transaction().add(
-      SystemProgram.nonceAdvance({
-        authorizedPubkey: authority.publicKey,
-        noncePubkey: nonce.publicKey,
-      }),
-      SystemProgram.transfer({
-        fromPubkey: fooPubKey,
-        toPubkey: recipientPubKey,
-        lamports: LAMPORTS_PER_SOL / 100,
-      })
-    );
-    tx.recentBlockhash = nonceAccount.nonce;
-    tx.feePayer = fooPubKey;
-    tx.partialSign(authority);
-
-    console.log(
-      "Base64 encoded transaction",
-      tx
-        .serialize({
-          requireAllSignatures: false,
-          verifySignatures: false,
-        })
-        .toString("base64")
-    );
-  });
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
 });

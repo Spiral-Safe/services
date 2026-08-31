@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spiral-client
+$patch: delete
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spiral-client
+$patch: delete
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: spiral-client
+$patch: delete

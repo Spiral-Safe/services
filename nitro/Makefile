@@ -1,57 +1,68 @@
-prog := python-spiralsafe
-version := $(shell git describe --tag --dirty --always)
+prog := spiral-safe-veil
+version := $(shell git -C .. describe --tags --dirty --always)
 image_tag := $(prog):$(version)
-image_tar := $(prog)-$(version)-kaniko.tar
-image_eif := $(image_tar:%.tar=%.eif)
+image_tar := $(prog)-$(version).tar
+image_eif := $(prog)-$(version).eif
+tools_dir := .tools
+plugin_sources := $(wildcard ../*.go ../cmd/spiral-safe/*.go) ../go.mod ../go.sum
+
+veil_commit := 2b8c06ca651e09b21832f6fc4ae2605371386f76
+spiral_safe_revision := $(shell git -C .. rev-parse HEAD)
 
 ARCH ?= $(shell uname -m)
 ifeq ($(ARCH),aarch64)
-	override ARCH=arm64
+  override ARCH=arm64
 endif
 ifeq ($(ARCH),x86_64)
-	override ARCH=amd64
+  override ARCH=amd64
 endif
 
-.PHONY: all
-all: run
+VEIL_FQDN ?= spiral-safe.invalid
+WEBAUTHN_RP_ID ?= localhost
+WEBAUTHN_RP_ORIGINS ?= http://localhost:9080
+
+.DEFAULT_GOAL := image
 
 .PHONY: image
 image: $(image_tar)
 
-$(image_tar): Dockerfile start.sh vault.hcl
-	docker run \
-		-v $(PWD):/workspace \
-		gcr.io/kaniko-project/executor:v1.9.2 \
-		--reproducible \
-		--no-push \
-		--tarPath $(image_tar) \
-		--destination $(image_tag) \
-		--build-arg TARGETPLATFORM=linux/$(ARCH) \
-		--build-arg TARGETOS=linux \
-		--build-arg TARGETARCH=$(ARCH) \
-		--custom-platform linux/$(ARCH)
+$(image_tar): Dockerfile start.sh start-vault.sh vault.hcl $(plugin_sources)
+	docker buildx build \
+		--platform linux/$(ARCH) \
+		--file Dockerfile \
+		--tag $(image_tag) \
+		--build-arg VEIL_COMMIT=$(veil_commit) \
+		--build-arg SPIRAL_SAFE_REVISION=$(spiral_safe_revision) \
+		--build-arg VEIL_FQDN=$(VEIL_FQDN) \
+		--build-arg WEBAUTHN_RP_ID=$(WEBAUTHN_RP_ID) \
+		--build-arg WEBAUTHN_RP_ORIGINS=$(WEBAUTHN_RP_ORIGINS) \
+		--output type=docker,dest=$(image_tar) \
+		..
+
+.PHONY: tools
+tools:
+	docker buildx build \
+		--platform linux/$(ARCH) \
+		--file Dockerfile \
+		--target veil-tools \
+		--build-arg VEIL_COMMIT=$(veil_commit) \
+		--output type=local,dest=$(tools_dir) \
+		..
+
+.PHONY: eif
+eif: $(image_eif)
 
 $(image_eif): $(image_tar)
-	docker load -i $<
+	docker load --input $<
 	nitro-cli build-enclave \
 		--docker-uri $(image_tag) \
 		--output-file $(image_eif)
 
 .PHONY: run
-run: $(image_eif)
-	# Terminate already-running enclave.
-	nitro-cli terminate-enclave --all
-	# Start our proxy and the enclave.
-	./run-enclave.sh $(image_eif)
+run: tools $(image_eif)
+	./run-enclave.sh $(image_eif) $(tools_dir)/veil-proxy
 
 .PHONY: clean
 clean:
 	rm -f $(image_tar) $(image_eif)
-
-.PHONY: register
-register:
-	vault plugin register --header=X-VAULT-TOKEN=xxxx -sha256=bfed59074e64cc71fc407ed53bb5fbfa18c8735541ebbd48578f121de2a984ff -version=v1.0.0 secret spiral-safe
-
-.PHONY: enable
-enable:
-	vault secrets enable --header=X-VAULT-TOKEN=XXXX -path=spiral-safe spiral-safe
+	rm -rf $(tools_dir)

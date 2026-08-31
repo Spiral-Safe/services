@@ -3,213 +3,441 @@ package solana_se
 import (
 	"bytes"
 	"context"
-	"encoding/gob"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"testing"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/hashicorp/vault/sdk/logical"
-	"github.com/portto/solana-go-sdk/types"
 )
 
-// MockWebAuthn is a mock implementation of the WebAuthnInterface.
-type MockWebAuthn struct{}
+type mockWebAuthn struct{}
 
-func (m *MockWebAuthn) BeginRegistration(user webauthn.User, options ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
-	// Return mock data
+func (*mockWebAuthn) BeginRegistration(webauthn.User, ...webauthn.RegistrationOption) (*protocol.CredentialCreation, *webauthn.SessionData, error) {
 	return &protocol.CredentialCreation{}, &webauthn.SessionData{}, nil
 }
 
-func (m *MockWebAuthn) CreateCredential(user webauthn.User, sessionData webauthn.SessionData, response *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
-	// Return mock data
-	return &webauthn.Credential{}, nil
+func (*mockWebAuthn) CreateCredential(webauthn.User, webauthn.SessionData, *protocol.ParsedCredentialCreationData) (*webauthn.Credential, error) {
+	return &webauthn.Credential{ID: []byte("credential")}, nil
 }
 
-func (m *MockWebAuthn) BeginLogin(user webauthn.User, options ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
-	// Return mock data
+func (*mockWebAuthn) BeginLogin(webauthn.User, ...webauthn.LoginOption) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
 	return &protocol.CredentialAssertion{}, &webauthn.SessionData{}, nil
 }
 
-func (m *MockWebAuthn) ValidateLogin(user webauthn.User, sessionData webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
-	// Return mock data
-	return &webauthn.Credential{}, nil
+func (*mockWebAuthn) ValidateLogin(webauthn.User, webauthn.SessionData, *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	return &webauthn.Credential{ID: []byte("credential")}, nil
 }
 
-func TestHandleReadUser(t *testing.T) {
+func TestTenantAndChainStorageIsolation(t *testing.T) {
 	b, err := newBackend(true)
 	if err != nil {
-		t.Fatalf("failed to create backend: %v", err)
+		t.Fatal(err)
 	}
-
-	ctx := context.Background()
+	b.webauthn = &mockWebAuthn{}
 	storage := &logical.InmemStorage{}
+	ctx := context.Background()
 
-	// Setup a user in storage
-	user := User{Username: "testuser", PubKey: "testpubkey", Credentials: []webauthn.Credential{{ID: []byte("test-credential-id")}}}
-	payload := Payload{User: user}
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(payload); err != nil {
-		t.Fatalf("failed to encode payload: %v", err)
-	}
-	entry := &logical.StorageEntry{
-		Key:   "test-client-token/testuser",
-		Value: buf.Bytes(),
-	}
-	if err := storage.Put(ctx, entry); err != nil {
-		t.Fatalf("failed to put entry in storage: %v", err)
+	for _, identity := range []requestIdentity{
+		{Tenant: "tenant-a", Username: "alice", Chain: ChainSolana},
+		{Tenant: "tenant-b", Username: "alice", Chain: ChainSolana},
+		{Tenant: "tenant-a", Username: "alice", Chain: ChainEthereum},
+	} {
+		response, err := b.handleWriteUser(ctx, request(storage, identity, nil), nil)
+		if err != nil {
+			t.Fatalf("initialize %+v: %v", identity, err)
+		}
+		if response.Data["chain"] != identity.Chain {
+			t.Fatalf("wrong chain for %+v: %v", identity, response.Data)
+		}
 	}
 
-	req := &logical.Request{
-		Operation: logical.ReadOperation,
-		Path:      "users",
-		Storage:   storage,
-		Data: map[string]interface{}{
-			"username": "testuser",
+	entries, err := storage.List(ctx, "tenants/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected two tenant prefixes, got %v", entries)
+	}
+}
+
+func TestWebAuthnUserIDIsStableScopedAndBounded(t *testing.T) {
+	identities := []requestIdentity{
+		{Tenant: "tenant-a", Username: "alice", Chain: ChainSolana},
+		{Tenant: "tenant-b", Username: "alice", Chain: ChainSolana},
+		{Tenant: "tenant-a", Username: "alice", Chain: ChainEthereum},
+		{
+			Tenant:   "t123456789012345678901234567890123456789012345678901234567890123",
+			Username: "u123456789012345678901234567890123456789012345678901234567890123",
+			Chain:    ChainEthereum,
 		},
-		ClientToken: "test-client-token",
 	}
-
-	resp, err := b.handleReadUser(ctx, req, nil)
-	if err != nil {
-		t.Fatalf("failed to read user: %v", err)
-	}
-
-	if resp.Data["pubKey"] != "testpubkey" {
-		t.Errorf("expected pubKey to be 'testpubkey', got %v", resp.Data["pubKey"])
+	seen := make(map[string]bool)
+	for _, identity := range identities {
+		id := webAuthnUserID(identity)
+		if len(id) == 0 || len(id) > 64 {
+			t.Fatalf("WebAuthn user ID length %d is outside 1-64 bytes", len(id))
+		}
+		if id != webAuthnUserID(identity) {
+			t.Fatal("WebAuthn user ID is not deterministic")
+		}
+		if seen[id] {
+			t.Fatalf("identity %+v collided with another test identity", identity)
+		}
+		seen[id] = true
 	}
 }
 
-func TestHandleWriteUser(t *testing.T) {
+func TestFrameworkCreateRouteRunsExistenceCheck(t *testing.T) {
 	b, err := newBackend(true)
 	if err != nil {
-		t.Fatalf("failed to create backend: %v", err)
+		t.Fatal(err)
 	}
-
-	ctx := context.Background()
-	storage := &logical.InmemStorage{}
-
-	req := &logical.Request{
+	b.webauthn = &mockWebAuthn{}
+	config := logical.TestBackendConfig()
+	config.StorageView = &logical.InmemStorage{}
+	if err := b.Setup(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	response, err := b.HandleRequest(context.Background(), &logical.Request{
 		Operation: logical.CreateOperation,
 		Path:      "users",
-		Storage:   storage,
+		Storage:   config.StorageView,
 		Data: map[string]interface{}{
-			"username":   "testuser",
-			"credential": map[string]interface{}{},
+			"tenant":   "tenant-a",
+			"username": "framework-user",
+			"chain":    ChainSolana,
 		},
-		ClientToken: "test-client-token",
-	}
-
-	resp, err := b.handleWriteUser(ctx, req, nil)
+	})
 	if err != nil {
-		t.Fatalf("failed to write user: %v", err)
+		t.Fatalf("framework route: %v", err)
 	}
-
-	if resp.Data["pubKey"] == "" {
-		t.Errorf("expected pubKey to be set, got empty string")
+	if response == nil || response.Data["ceremonyId"] == nil {
+		t.Fatalf("unexpected framework response: %#v", response)
 	}
 }
 
-func TestHandleWriteAuth(t *testing.T) {
+func TestEmptyCredentialCannotRestartRegistrationCeremony(t *testing.T) {
 	b, err := newBackend(true)
 	if err != nil {
-		t.Fatalf("failed to create backend: %v", err)
+		t.Fatal(err)
 	}
-
-	b.webauthn = &MockWebAuthn{}
-
-	ctx := context.Background()
+	b.webauthn = &mockWebAuthn{}
 	storage := &logical.InmemStorage{}
+	ctx := context.Background()
+	identity := requestIdentity{Tenant: "tenant-a", Username: "alice", Chain: ChainEthereum}
 
-	// Setup a user in storage
-	user := User{Username: "testuser", PubKey: "testpubkey", Credentials: []webauthn.Credential{{ID: []byte("test-credential-id")}}}
-	acct := types.NewAccount()
-	payload := Payload{User: user, PrivateKey: acct.PrivateKey}
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(payload); err != nil {
-		t.Fatalf("failed to encode payload: %v", err)
-	}
-	entry := &logical.StorageEntry{
-		Key:   "test-client-token/testuser",
-		Value: buf.Bytes(),
-	}
-	if err := storage.Put(ctx, entry); err != nil {
-		t.Fatalf("failed to put entry in storage: %v", err)
-	}
-
-	req := &logical.Request{
-		Operation: logical.CreateOperation,
-		Path:      "auth",
-		Storage:   storage,
-		Data: map[string]interface{}{
-			"username": "testuser",
-			"tx":       "dGVzdHR4", // base64 for "testtx"
-		},
-		ClientToken: "test-client-token",
-	}
-
-	resp, err := b.handleWriteAuth(ctx, req, nil)
+	initialized, err := b.handleWriteUser(ctx, request(storage, identity, nil), nil)
 	if err != nil {
-		t.Fatalf("failed to write auth: %v", err)
+		t.Fatalf("init: %v", err)
 	}
+	_, err = b.handleWriteUser(ctx, request(storage, identity, map[string]interface{}{
+		"ceremonyId": initialized.Data["ceremonyId"],
+		"credential": map[string]interface{}{},
+	}), nil)
+	if err == nil {
+		t.Fatal("expected an empty completion credential to be rejected")
+	}
+}
 
-	if resp.Data["pubKey"] != "testpubkey" {
-		t.Errorf("expected pubKey to be 'testpubkey', got %v", resp.Data["pubKey"])
-	}
-
-	if resp.Data["options"] == nil {
-		t.Errorf("expected options to be set, got nil")
-	}
-
-	car := protocol.CredentialAssertionResponse{
-		PublicKeyCredential: protocol.PublicKeyCredential{
-			Credential: protocol.Credential{
-				ID:   "test-credential-id",
-				Type: "public-key",
-			},
-			RawID: protocol.URLEncodedBase64("test-credential-id"),
-		},
-		AssertionResponse: protocol.AuthenticatorAssertionResponse{
-			AuthenticatorData: protocol.URLEncodedBase64(`{}`),
-			AuthenticatorResponse: protocol.AuthenticatorResponse{
-				ClientDataJSON: protocol.URLEncodedBase64(`{}`),
-			},
-		},
-	}
-	req = &logical.Request{
-		Operation: logical.CreateOperation,
-		Path:      "auth",
-		Storage:   storage,
-		Data: map[string]interface{}{
-			"username": "testuser",
-			"credential": func() map[string]interface{} {
-				var credentialMap map[string]interface{}
-				data, err := json.Marshal(car)
-				if err != nil {
-					t.Fatalf("failed to marshal car: %v", err)
-				}
-				err = json.Unmarshal(data, &credentialMap)
-				if err != nil {
-					t.Fatalf("failed to unmarshal car: %v", err)
-				}
-				return credentialMap
-			}(),
-		},
-		ClientToken: "test-client-token",
-	}
-
-	resp, err = b.handleWriteAuth(ctx, req, nil)
+func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) {
+	t.Setenv("WEBAUTHN_RP_ID", "localhost")
+	t.Setenv("WEBAUTHN_RP_ORIGINS", "http://localhost:9080")
+	b, err := newBackend(false)
 	if err != nil {
-		t.Fatalf("failed to write auth: %v", err)
+		t.Fatal(err)
+	}
+	storage := &logical.InmemStorage{}
+	ctx := context.Background()
+	config := logical.TestBackendConfig()
+	config.StorageView = storage
+	if err := b.Setup(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	identity := requestIdentity{Tenant: "tenant-a", Username: "alice", Chain: ChainEthereum}
+
+	initialized, err := b.HandleRequest(ctx, frameworkRequest(
+		storage,
+		identity,
+		"users",
+		logical.CreateOperation,
+		nil,
+	))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	authenticatorKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialID := make([]byte, 32)
+	if _, err := rand.Read(credentialID); err != nil {
+		t.Fatal(err)
+	}
+	registrationCredential := virtualRegistrationCredential(
+		t,
+		initialized.Data["options"],
+		authenticatorKey,
+		credentialID,
+	)
+	created, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "users", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": initialized.Data["ceremonyId"],
+		"credential": registrationCredential,
+	}))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	address, ok := created.Data["address"].(string)
+	if !ok || len(address) != 42 || address[:2] != "0x" {
+		t.Fatalf("unexpected Ethereum address: %v", created.Data)
+	}
+	checked, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "check", logical.UpdateOperation, nil))
+	if err != nil || checked.Data["address"] != address {
+		t.Fatalf("framework check route: %#v, %v", checked, err)
 	}
 
-	if resp.Data["pubKey"] != "testpubkey" {
-		t.Errorf("expected pubKey to be 'testpubkey', got %v", resp.Data["pubKey"])
+	message := []byte("Spiral Safe virtual authenticator lifecycle")
+	started, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"operation": OperationMessage,
+		"payload":   base64.StdEncoding.EncodeToString(message),
+	}))
+	if err != nil {
+		t.Fatalf("signin: %v", err)
+	}
+	assertionCredential := virtualAssertionCredential(
+		t,
+		started.Data["options"],
+		authenticatorKey,
+		credentialID,
+		1,
+		0x05,
+	)
+	completed, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": started.Data["ceremonyId"],
+		"credential": assertionCredential,
+	}))
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(completed.Data["signature"].(string))
+	if err != nil || len(signature) != 65 {
+		t.Fatalf("invalid Ethereum signature: %v, %v", completed.Data["signature"], err)
+	}
+	if recovered := recoverEthereumAddress(t, message, signature); recovered != address {
+		t.Fatalf("recovered address %s does not match wallet %s", recovered, address)
 	}
 
-	if resp.Data["encodedTX"] != "testtx" {
-		t.Errorf("expected encodedTX to be 'testtx', got %v", resp.Data["encodedTX"])
+	// A completed assertion cannot be replayed to release another signature.
+	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": started.Data["ceremonyId"],
+		"credential": assertionCredential,
+	})); err == nil {
+		t.Fatal("expected replayed assertion to be rejected")
 	}
+
+	// A present-but-unverified assertion must never release a signature.
+	uvStarted, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"operation": OperationMessage,
+		"payload":   base64.StdEncoding.EncodeToString(message),
+	}))
+	if err != nil {
+		t.Fatalf("start user-verification regression: %v", err)
+	}
+	withoutUserVerification := virtualAssertionCredential(
+		t,
+		uvStarted.Data["options"],
+		authenticatorKey,
+		credentialID,
+		2,
+		0x01,
+	)
+	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": uvStarted.Data["ceremonyId"],
+		"credential": withoutUserVerification,
+	})); err == nil {
+		t.Fatal("expected assertion without user verification to be rejected")
+	}
+
+	// A nonzero signature-counter regression disables the credential before
+	// signing and prevents another ceremony from starting.
+	cloneStarted, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"operation": OperationMessage,
+		"payload":   base64.StdEncoding.EncodeToString(message),
+	}))
+	if err != nil {
+		t.Fatalf("start clone-warning regression: %v", err)
+	}
+	regressedCounter := virtualAssertionCredential(
+		t,
+		cloneStarted.Data["options"],
+		authenticatorKey,
+		credentialID,
+		1,
+		0x05,
+	)
+	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": cloneStarted.Data["ceremonyId"],
+		"credential": regressedCounter,
+	})); err == nil {
+		t.Fatal("expected signature-counter regression to be rejected")
+	}
+	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"operation": OperationMessage,
+		"payload":   base64.StdEncoding.EncodeToString(message),
+	})); err == nil {
+		t.Fatal("expected clone-warned credential to remain disabled")
+	}
+}
+
+func request(storage logical.Storage, identity requestIdentity, extra map[string]interface{}) *logical.Request {
+	data := map[string]interface{}{
+		"tenant":   identity.Tenant,
+		"username": identity.Username,
+		"chain":    identity.Chain,
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	return &logical.Request{
+		Operation: logical.CreateOperation,
+		Storage:   storage,
+		Data:      data,
+	}
+}
+
+func frameworkRequest(
+	storage logical.Storage,
+	identity requestIdentity,
+	path string,
+	operation logical.Operation,
+	extra map[string]interface{},
+) *logical.Request {
+	req := request(storage, identity, extra)
+	req.Path = path
+	req.Operation = operation
+	return req
+}
+
+func virtualRegistrationCredential(t *testing.T, options interface{}, key *ecdsa.PrivateKey, credentialID []byte) map[string]interface{} {
+	t.Helper()
+	challenge := optionChallenge(t, options)
+	clientData := mustJSON(t, map[string]interface{}{
+		"type":        "webauthn.create",
+		"challenge":   challenge,
+		"origin":      "http://localhost:9080",
+		"crossOrigin": false,
+	})
+	rpIDHash := sha256.Sum256([]byte("localhost"))
+	coseKey, err := cbor.Marshal(map[int]interface{}{
+		1:  2,
+		3:  -7,
+		-1: 1,
+		-2: paddedCoordinate(key.PublicKey.X.Bytes()),
+		-3: paddedCoordinate(key.PublicKey.Y.Bytes()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authData bytes.Buffer
+	authData.Write(rpIDHash[:])
+	authData.WriteByte(0x45) // user present, user verified, attested credential data
+	_ = binary.Write(&authData, binary.BigEndian, uint32(0))
+	authData.Write(make([]byte, 16)) // AAGUID for the software authenticator
+	_ = binary.Write(&authData, binary.BigEndian, uint16(len(credentialID)))
+	authData.Write(credentialID)
+	authData.Write(coseKey)
+	attestation, err := cbor.Marshal(map[string]interface{}{
+		"fmt":      "none",
+		"authData": authData.Bytes(),
+		"attStmt":  map[string]interface{}{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := base64.RawURLEncoding.EncodeToString(credentialID)
+	return map[string]interface{}{
+		"id":    id,
+		"rawId": id,
+		"type":  "public-key",
+		"response": map[string]interface{}{
+			"clientDataJSON":    base64.RawURLEncoding.EncodeToString(clientData),
+			"attestationObject": base64.RawURLEncoding.EncodeToString(attestation),
+		},
+	}
+}
+
+func virtualAssertionCredential(t *testing.T, options interface{}, key *ecdsa.PrivateKey, credentialID []byte, counter uint32, flags byte) map[string]interface{} {
+	t.Helper()
+	challenge := optionChallenge(t, options)
+	clientData := mustJSON(t, map[string]interface{}{
+		"type":        "webauthn.get",
+		"challenge":   challenge,
+		"origin":      "http://localhost:9080",
+		"crossOrigin": false,
+	})
+	rpIDHash := sha256.Sum256([]byte("localhost"))
+	var authData bytes.Buffer
+	authData.Write(rpIDHash[:])
+	authData.WriteByte(flags)
+	_ = binary.Write(&authData, binary.BigEndian, counter)
+	clientHash := sha256.Sum256(clientData)
+	signed := append(append([]byte{}, authData.Bytes()...), clientHash[:]...)
+	digest := sha256.Sum256(signed)
+	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := base64.RawURLEncoding.EncodeToString(credentialID)
+	return map[string]interface{}{
+		"id":    id,
+		"rawId": id,
+		"type":  "public-key",
+		"response": map[string]interface{}{
+			"clientDataJSON":    base64.RawURLEncoding.EncodeToString(clientData),
+			"authenticatorData": base64.RawURLEncoding.EncodeToString(authData.Bytes()),
+			"signature":         base64.RawURLEncoding.EncodeToString(signature),
+		},
+	}
+}
+
+func optionChallenge(t *testing.T, options interface{}) string {
+	t.Helper()
+	encoded, err := json.Marshal(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		PublicKey struct {
+			Challenge string `json:"challenge"`
+		} `json:"publicKey"`
+	}
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.PublicKey.Challenge == "" {
+		t.Fatalf("missing challenge in %s", encoded)
+	}
+	return value.PublicKey.Challenge
+}
+
+func mustJSON(t *testing.T, value interface{}) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func paddedCoordinate(value []byte) []byte {
+	coordinate := make([]byte, 32)
+	copy(coordinate[len(coordinate)-len(value):], value)
+	return coordinate
 }

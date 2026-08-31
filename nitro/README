@@ -1,15 +1,123 @@
-Nitriding example
-=================
+Spiral Safe Veil adapter for AWS Nitro Enclaves
+================================================
 
-This directory contains Hashicorp vault application with Spiral Safe plugin loaded in a Nitro Enclave.  The project's
-[Dockerfile](Dockerfile) adds the nitriding standalone executable along with the
-enclave application, consisting of the
-[Go](backend.go)
-and a
-[shell script](start.sh)
-that invokes nitriding in the background, followed by running the vault and spiral safe plugin.
+Status: buildable adapter and migration scaffold, not a production enclave
+release. It replaces the archived Nitriding build dependency with
+[Veil](https://github.com/Amnesic-Systems/veil), but Veil is not a drop-in
+Nitriding binary and the old lifecycle assumptions do not carry over.
 
-To build the nitriding executable, the Docker image, the enclave image, and
-finally run the enclave image, simply run:
+What the adapter does
+---------------------
 
-    make
+The image combines three pieces:
+
+1. Veil's `veil-daemon` runs inside the enclave. It establishes a VSOCK/TUN
+   tunnel, creates the attested TLS endpoint, and reverse-proxies HTTPS port
+   8443 to Vault's loopback-only HTTP listener.
+2. Vault 1.21.4 runs as the unprivileged `vault` user and loads the Spiral Safe
+   external plugin binary from `/vault/plugins`.
+3. Veil's `veil-proxy` runs as root on the enclave's EC2 parent and supplies
+   networking at `10.0.0.1`; the enclave is reachable from that parent at
+   `10.0.0.2:8443`.
+
+Veil's public endpoints (`/veil`, `/veil/config`, and `/veil/attestation`) and
+the proxied Vault API share the external TLS listener. Veil's internal control
+API listens on loopback port 8080. The image signals `/veil/ready` after the
+Vault listener starts.
+
+Pinned source and licensing
+---------------------------
+
+The build verifies and compiles Veil v0.5.1 at commit
+`2b8c06ca651e09b21832f6fc4ae2605371386f76`. The image records the Veil and
+Spiral Safe source revisions as OCI labels. It also includes Veil's license at
+`/licenses/veil-GPL-3.0.txt` and declares `GPL-3.0-only` in its license label.
+
+Veil is GPL-3.0 licensed. Distributing an image that contains a Veil binary can
+create GPL notice and corresponding-source obligations, and combining it with
+other software may require additional analysis. Keep the exact source pin,
+license file, build instructions, and a durable source offer with every image;
+obtain legal review before external distribution. This is engineering guidance,
+not a license opinion. The image also carries the Spiral Safe Apache-2.0 license
+at `/licenses/spiral-safe-Apache-2.0.txt`. Vault 1.21.4 is distributed under
+BUSL-1.1, so a distributor must also review and satisfy HashiCorp's current
+Vault license terms. The OCI license label names all three licenses; it is
+metadata, not a substitute for notices, source delivery, or legal review.
+
+The Go 1.26 builder and Vault images are pinned by immutable multi-platform
+digest. Vault 1.21.4 is a patched 1.x release and the plugin
+registration/startup smoke test is part of this migration's verification path.
+Continue normal upgrade and security review rather than treating either pin as
+permanent.
+
+Build without launching an enclave
+-----------------------------------
+
+From this directory:
+
+    VEIL_FQDN=vault.example.com \
+      WEBAUTHN_RP_ID=wallet.example.com \
+      WEBAUTHN_RP_ORIGINS=https://wallet.example.com \
+      make image
+    make tools
+
+`make image` creates an ordinary Linux container archive. `make tools` exports
+the pinned Linux `veil-proxy` and `veil-verify` binaries into the ignored
+`.tools/` directory. Neither target invokes `nitro-cli` or changes enclave
+state. The FQDN becomes part of the image and therefore part of its enclave
+measurements; use the real immutable deployment name before producing a release
+EIF. The WebAuthn relying-party inputs are also measured image inputs and must
+match the browser origin that completes each ceremony.
+
+EIF and explicit EC2-host operation
+-----------------------------------
+
+EIF creation requires an enclave-enabled EC2 parent with the Nitro Enclaves CLI:
+
+    make eif
+
+Launching is deliberately separate and has no "terminate all" behavior:
+
+    make run
+
+The run script starts the pinned `veil-proxy`, launches one named enclave
+without debug mode or an attached console, and then keeps the proxy in the
+foreground. It does not terminate the enclave on exit. Host routing, security
+groups, a public load balancer, DNS, and access to `10.0.0.2:8443` remain
+operator responsibilities. Follow the
+[AWS Nitro Enclaves guide](https://docs.aws.amazon.com/enclaves/latest/user/)
+and Veil's source and examples rather than the removed Nitriding host setup.
+
+Unresolved security and lifecycle boundaries
+--------------------------------------------
+
+The adapter proves that Veil can wrap the local Vault listener, but it does not
+make the overall system production-safe:
+
+* Nitro Enclaves have no persistent storage. `/vault/data` disappears with the
+  enclave. The Kubernetes Raft deployment in `../deploy/` is durable, but it
+  runs outside the enclave and is a separate topology. An enclave release needs
+  a reviewed, attested protocol that encrypts and commits state to durable
+  storage outside the enclave.
+* Vault starts uninitialized and sealed. There is no attestation-aware bootstrap
+  client that verifies Veil, pins its generated TLS key, initializes Vault, and
+  delivers recovery material without exposing it to the parent. Standard Vault
+  CLI TLS validation alone is not that protocol.
+* Plugin registration and enabling require an authorized Vault operator after
+  initialization. The image does not contain a root token, fixed checksum, KMS
+  credential, or automatic privileged bootstrap.
+* Veil provides attestation endpoints and `veil-verify`, but Spiral Safe still
+  needs an EC2 integration test that builds the release EIF twice, verifies its
+  measurements and application hash, checks nonce-bound attestation, and rejects
+  altered images.
+* No attestation-bound KMS or workload-identity policy has been implemented for
+  this image. Static AWS credentials must never be embedded in an image or EIF.
+* The Express API, browser client, authorization layer, and load tests are not
+  inside this EIF. Kubernetes and enclave deployment are currently separate
+  operational modes.
+* `veil-proxy` requires root, `/dev/net/tun`, NAT changes, and VSOCK access on
+  the EC2 parent. Those privileges must be isolated and monitored.
+
+Do not call this path production-ready until persistence, bootstrap, attested
+identity, KMS policy, disaster recovery, upgrades, and end-to-end transaction
+signing are exercised on enclave-enabled EC2 hardware.

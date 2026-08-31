@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: spiral-safe
+resources:
+  - ../../base
+  - vault-dev.yaml
+configMapGenerator:
+  - name: spiral-service-config
+    literals:
+      - SERVICE_DEV_MODE=true
+      - VAULT_ADDRESS=http://vault:8200
+      - CORS_ALLOWED_ORIGINS=http://localhost:9080
+      - WEBAUTHN_RP_ID=localhost
+      - WEBAUTHN_RP_ORIGINS=http://localhost:9080
+secretGenerator:
+  - name: spiral-service-auth
+    literals:
+      - API_TOKEN=spiral-safe-local-development-only
+      - API_TENANT=local
+      - VAULT_TOKEN=root
+patches:
+  - path: replicas.yaml

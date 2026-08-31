@@ -1,0 +1,56 @@
+apiVersion: skaffold/v4beta13
+kind: Config
+metadata:
+  name: spiral-safe
+build:
+  local:
+    push: false
+  artifacts:
+    - image: spiral-safe/vault-plugin
+      context: .
+      docker:
+        dockerfile: deploy/docker/Dockerfile.vault
+    - image: spiral-safe/service
+      context: .
+      docker:
+        dockerfile: Dockerfile.service
+    - image: spiral-safe/client
+      context: .
+      docker:
+        dockerfile: Dockerfile.client
+manifests:
+  kustomize:
+    paths:
+      - deploy/overlays/local
+deploy:
+  kubectl: {}
+portForward:
+  - resourceType: service
+    resourceName: spiral-client
+    namespace: spiral-safe
+    port: 9080
+    localPort: 9080
+  - resourceType: service
+    resourceName: spiral-service
+    namespace: spiral-safe
+    port: 3000
+    localPort: 3000
+  - resourceType: service
+    resourceName: vault
+    namespace: spiral-safe
+    port: 8200
+    localPort: 8200
+profiles:
+  - name: production
+    build:
+      local:
+        push: true
+    manifests:
+      kustomize:
+        paths:
+          - deploy/overlays/production
+    patches:
+      - op: remove
+        path: /portForward
+      - op: remove
+        path: /build/artifacts/2

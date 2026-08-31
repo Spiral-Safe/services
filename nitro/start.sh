@@ -1,10 +1,17 @@
 #!/bin/sh
+set -eu
 
-nitriding -fqdn spiralsafe.com -appwebsrv http://127.0.0.1:8203 -ext-pub-port 443 -intport 8080 &
-echo "[sh] Started nitriding."
+if [ -z "${VEIL_FQDN:-}" ]; then
+  echo "VEIL_FQDN must be fixed at image build time." >&2
+  exit 1
+fi
 
-sleep 1
-
-export VAULT_ADDR="http://127.0.0.1:8200"
-sh -c "vault server -config=/vault/vault.hcl & sleep 5 ; vault operator init & wait"
-echo "[sh] Ran spiralsafe script."
+exec veil-daemon \
+  -fqdn "${VEIL_FQDN}" \
+  -enclave-code-uri "${VEIL_SOURCE_URI:-https://github.com/Spiral-Safe/services}" \
+  -ext-port 8443 \
+  -int-port 8080 \
+  -dns-resolver 10.0.0.1 \
+  -wait-for-app \
+  -app-web-srv http://127.0.0.1:8200 \
+  -app-cmd /usr/local/bin/start-vault

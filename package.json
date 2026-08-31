@@ -18,7 +18,9 @@
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/**/*.test.js",
+    "billing:migrate": "npm run build && node dist/billing/migrate.js",
+    "billing:bootstrap-admin": "npm run build && node dist/billing/bootstrap-admin.js",
+    "test": "npm run build && node --test dist/*.test.js dist/**/*.test.js",
     "build:client": "esbuild public/solana-entry.js --bundle --format=iife --global-name=solanaWeb3 --platform=browser --outfile=public/browser.js",
     "script:create": "tsx scripts/create-transaction.ts",
     "script:submit": "tsx scripts/submit-transaction.ts",
@@ -28,19 +30,28 @@
     "load": "node load-test/suite.mjs",
     "load:smoke": "node load-test/suite.mjs --smoke",
     "load:all": "node load-test/suite.mjs --scenario all --allow-mutations",
-    "load:test": "node --test load-test/*.test.mjs"
+    "load:test": "node --test load-test/*.test.mjs",
+    "recording:test": "node --test recording/*.test.mjs",
+    "recording:all": "node recording/record.mjs",
+    "recording:extension": "node recording/record.mjs --flow extension-demo",
+    "recording:wallet": "node recording/record.mjs --flow standalone-wallet",
+    "recording:dashboards": "node recording/record.mjs --flow developer-dashboard,admin-dashboard"
   },
   "dependencies": {
     "cors": "2.8.5",
-    "express": "5.2.1"
+    "express": "5.2.1",
+    "pg": "8.23.0",
+    "stripe": "22.4.0"
   },
   "devDependencies": {
     "@solana/web3.js": "1.98.4",
     "@types/cors": "2.8.19",
     "@types/express": "5.0.6",
     "@types/node": "22.19.11",
+    "@types/pg": "8.23.1",
     "esbuild": "0.28.2",
     "nodemon": "3.1.14",
+    "playwright": "1.62.1",
     "prettier": "3.9.6",
     "tsx": "4.23.13",
     "typescript": "5.9.3"

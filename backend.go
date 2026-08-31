@@ -569,6 +569,10 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, _ *
 	if err := savePayload(ctx, req.Storage, identity, payload); err != nil {
 		return nil, err
 	}
+	requestedOperation := normalizeOperation(stringValue(req.Data, "operation"))
+	if requestedOperation != ceremony.Pending.Operation {
+		return nil, fmt.Errorf("authentication ceremony operation mismatch")
+	}
 	parsed, err := b.parseAssertionCredential(credential)
 	if err != nil {
 		return nil, err
@@ -593,6 +597,9 @@ func (b *backend) handleWriteAuth(ctx context.Context, req *logical.Request, _ *
 		return nil, fmt.Errorf("sign payload: %w", err)
 	}
 	response := walletResponse(payload)
+	// Return the operation stored with the one-time ceremony. Callers must not
+	// infer billing semantics from an untrusted completion request.
+	response["operation"] = ceremony.Pending.Operation
 	if result.EncodedTransaction != "" {
 		response["encodedTX"] = result.EncodedTransaction
 	}

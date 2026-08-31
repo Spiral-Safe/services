@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Spiral Safe admin dashboard fixture</title>
+    <link rel="stylesheet" href="/recording-fixtures/dashboard.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <div class="brand"><span class="mark">S</span> Spiral Safe</div>
+        <nav aria-label="Admin dashboard">
+          <button data-show="overview" aria-current="page">Operations</button>
+          <button data-show="tenants" data-recording="admin-tenants">
+            Tenants
+          </button>
+          <button data-show="audit" data-recording="admin-audit">Audit</button>
+        </nav>
+      </aside>
+      <main>
+        <span class="fixture-banner">Fixture mode · synthetic local data</span>
+        <section data-panel="overview" data-recording="admin-overview">
+          <h1>Operations overview</h1>
+          <p class="lede">
+            Review a synthetic control plane without Kubernetes, KMS, Stripe,
+            Vault recovery material, or production identities.
+          </p>
+          <div class="grid">
+            <article class="card">
+              <span class="muted">Service</span>
+              <p class="metric">Ready</p>
+              <span class="status">Fixture</span>
+            </article>
+            <article class="card">
+              <span class="muted">Tenants</span>
+              <p class="metric">3</p>
+              <span class="muted">All synthetic</span>
+            </article>
+            <article class="card">
+              <span class="muted">Policy alerts</span>
+              <p class="metric">0</p>
+              <span class="muted">Last 24 hours</span>
+            </article>
+          </div>
+        </section>
+        <section class="panel" data-panel="tenants" hidden>
+          <h2>Tenant directory</h2>
+          <p class="muted">
+            Fixture identities only. No customer data is loaded.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Tenant</th>
+                <th>Authorized users</th>
+                <th>Chains</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                data-recording="admin-select-tenant"
+                data-fixture-action="Opened Acme Sandbox policy"
+              >
+                <td>
+                  <button
+                    class="primary"
+                    data-fixture-action="Opened Acme Sandbox policy"
+                  >
+                    Acme Sandbox
+                  </button>
+                </td>
+                <td>2</td>
+                <td>Solana, Ethereum</td>
+                <td><span class="status">Healthy</span></td>
+              </tr>
+              <tr>
+                <td>Northstar Test</td>
+                <td>1</td>
+                <td>Solana</td>
+                <td><span class="status">Healthy</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="panel" data-panel="audit" hidden>
+          <h2>Signing audit</h2>
+          <p class="muted">
+            Synthetic metadata only; credentials and payloads are intentionally
+            absent.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>Tenant</th>
+                <th>Chain</th>
+                <th>Outcome</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>transaction.signed</td>
+                <td>Acme Sandbox</td>
+                <td>solana</td>
+                <td><span class="status">Allowed</span></td>
+              </tr>
+              <tr>
+                <td>message.signed</td>
+                <td>Acme Sandbox</td>
+                <td>ethereum</td>
+                <td><span class="status">Allowed</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+    <div class="toast" role="status"></div>
+    <script src="/recording-fixtures/dashboard.js"></script>
+  </body>
+</html>

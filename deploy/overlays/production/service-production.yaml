@@ -5,6 +5,34 @@ metadata:
 spec:
   template:
     spec:
+      initContainers:
+        - name: billing-migrate
+          image: spiral-safe/service
+          imagePullPolicy: IfNotPresent
+          command:
+            - node
+            - dist/billing/migrate.js
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DATABASE_URL
+            - name: DATABASE_SSL
+              value: "true"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
       containers:
         - name: service
           env:

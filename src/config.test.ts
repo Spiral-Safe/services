@@ -128,3 +128,106 @@ test("explicit development mode limits plaintext Vault hosts", () => {
     /development HTTP VAULT_ADDRESS must be loopback/,
   );
 });
+
+test("seeded billing uses the deterministic in-memory development store only", () => {
+  const config = loadConfig({
+    SERVICE_DEV_MODE: "true",
+    API_TOKEN: "local-token",
+    CORS_ALLOWED_ORIGINS: "http://localhost:9080",
+    VAULT_TOKEN: "root",
+    BILLING_MODE: "memory",
+    BILLING_DEMO_SEED: "true",
+    API_KEY_PEPPER: "p".repeat(32),
+    CONSOLE_SESSION_SECRET: "s".repeat(32),
+    CONSOLE_ORIGIN: "http://localhost:3000",
+  });
+  assert.equal(config.billing.mode, "memory");
+  assert.deepEqual(
+    config.billing.plans.map((plan) => plan.id),
+    ["sandbox", "launch", "scale"],
+  );
+  assert.ok(config.billing.plans.every((plan) => plan.demo));
+  assert.throws(
+    () =>
+      loadConfig({
+        SERVICE_DEV_MODE: "true",
+        API_TOKEN: "local-token",
+        CORS_ALLOWED_ORIGINS: "http://localhost:9080",
+        VAULT_TOKEN: "root",
+        BILLING_MODE: "memory",
+        BILLING_DEMO_SEED: "true",
+        API_KEY_PEPPER: "p".repeat(32),
+        CONSOLE_SESSION_SECRET: "s".repeat(32),
+        CONSOLE_ORIGIN: "http://localhost:3000",
+        BILLING_RESERVATION_TTL_MS: "1000",
+      }),
+    /must be between 60000 and 3600000/,
+  );
+});
+
+test("production platform billing requires PostgreSQL and operator-defined plans", () => {
+  const plan = JSON.stringify([
+    {
+      id: "production",
+      name: "Production",
+      activeWalletLimit: 100,
+      transactionLimit: 1000,
+      walletUnitAmount: 25,
+      transactionUnitAmount: 1,
+      stripeProductId: "prod_operator",
+      stripePriceId: "price_operator",
+      metronomeProductId: "metro_product_operator",
+      metronomeRateCardId: "metro_rate_card_operator",
+    },
+  ]);
+  const config = loadConfig(
+    productionEnv({
+      API_TOKEN_HASHES: undefined,
+      BILLING_MODE: "postgres",
+      DATABASE_URL: "postgresql://billing.example/spiral",
+      API_KEY_PEPPER: "p".repeat(32),
+      CONSOLE_SESSION_SECRET: "s".repeat(32),
+      CONSOLE_ORIGIN: "https://console.example",
+      BILLING_PLANS_JSON: plan,
+      STRIPE_API_KEY: "rk_live_fixture",
+      STRIPE_WEBHOOK_SECRET: "whsec_fixture",
+      STRIPE_CHECKOUT_SUCCESS_URL: "https://console.example/success",
+      STRIPE_CHECKOUT_CANCEL_URL: "https://console.example/cancel",
+      STRIPE_PORTAL_RETURN_URL: "https://console.example/developer",
+      METRONOME_API_TOKEN: "metronome-fixture",
+      METRONOME_STRIPE_INVOICING_VERIFIED: "true",
+    }),
+  );
+  assert.equal(config.billing.mode, "postgres");
+  assert.equal(config.apiTokenHashes.size, 0);
+  assert.equal(config.billing.plans[0].walletUnitAmount, 25);
+  assert.equal(config.billing.consoleOrigin, "https://console.example");
+  assert.throws(
+    () =>
+      loadConfig(
+        productionEnv({
+          API_TOKEN_HASHES: undefined,
+          BILLING_MODE: "postgres",
+          DATABASE_URL: "postgresql://billing.example/spiral",
+          API_KEY_PEPPER: "p".repeat(32),
+          CONSOLE_SESSION_SECRET: "s".repeat(32),
+          CONSOLE_ORIGIN: "https://console.example",
+          BILLING_PLANS_JSON: plan,
+        }),
+      ),
+    /requires both Stripe and Metronome/,
+  );
+  assert.throws(
+    () =>
+      loadConfig(
+        productionEnv({
+          BILLING_MODE: "memory",
+          API_KEY_PEPPER: "p".repeat(32),
+          CONSOLE_SESSION_SECRET: "s".repeat(32),
+          CONSOLE_ORIGIN: "https://console.example",
+          BILLING_PLANS_JSON: plan,
+        }),
+      ),
+    /in-memory billing store is development-only/,
+  );
+});

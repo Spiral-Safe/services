@@ -204,6 +204,37 @@ func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) 
 	}
 
 	message := []byte("Spiral Safe virtual authenticator lifecycle")
+	mismatchStarted, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"operation": OperationMessage,
+		"payload":   base64.StdEncoding.EncodeToString(message),
+	}))
+	if err != nil {
+		t.Fatalf("start operation-mismatch regression: %v", err)
+	}
+	mismatchCredential := virtualAssertionCredential(
+		t,
+		mismatchStarted.Data["options"],
+		authenticatorKey,
+		credentialID,
+		1,
+		0x05,
+	)
+	mismatched, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": mismatchStarted.Data["ceremonyId"],
+		"operation":  OperationTransaction,
+		"credential": mismatchCredential,
+	}))
+	if err == nil || mismatched != nil {
+		t.Fatalf("operation mismatch released a signing response: %#v, %v", mismatched, err)
+	}
+	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
+		"ceremonyId": mismatchStarted.Data["ceremonyId"],
+		"operation":  OperationMessage,
+		"credential": mismatchCredential,
+	})); err == nil {
+		t.Fatal("operation-mismatched ceremony was not consumed")
+	}
+
 	started, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
 		"operation": OperationMessage,
 		"payload":   base64.StdEncoding.EncodeToString(message),
@@ -221,10 +252,14 @@ func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) 
 	)
 	completed, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
 		"ceremonyId": started.Data["ceremonyId"],
+		"operation":  OperationMessage,
 		"credential": assertionCredential,
 	}))
 	if err != nil {
 		t.Fatalf("complete: %v", err)
+	}
+	if completed.Data["operation"] != OperationMessage {
+		t.Fatalf("completion did not return trusted ceremony operation: %#v", completed.Data)
 	}
 	signature, err := base64.StdEncoding.DecodeString(completed.Data["signature"].(string))
 	if err != nil || len(signature) != 65 {
@@ -237,6 +272,7 @@ func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) 
 	// A completed assertion cannot be replayed to release another signature.
 	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
 		"ceremonyId": started.Data["ceremonyId"],
+		"operation":  OperationMessage,
 		"credential": assertionCredential,
 	})); err == nil {
 		t.Fatal("expected replayed assertion to be rejected")
@@ -260,6 +296,7 @@ func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) 
 	)
 	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
 		"ceremonyId": uvStarted.Data["ceremonyId"],
+		"operation":  OperationMessage,
 		"credential": withoutUserVerification,
 	})); err == nil {
 		t.Fatal("expected assertion without user verification to be rejected")
@@ -284,6 +321,7 @@ func TestFullWebAuthnRegistrationAuthenticationAndEthereumSigning(t *testing.T) 
 	)
 	if _, err := b.HandleRequest(ctx, frameworkRequest(storage, identity, "auth", logical.UpdateOperation, map[string]interface{}{
 		"ceremonyId": cloneStarted.Data["ceremonyId"],
+		"operation":  OperationMessage,
 		"credential": regressedCounter,
 	})); err == nil {
 		t.Fatal("expected signature-counter regression to be rejected")

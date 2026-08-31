@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "name": "Spiral Safe annotated product recordings",
+  "fixtureMode": {
+    "enabled": true,
+    "label": "FIXTURE MODE · synthetic local data",
+    "description": "A loopback-only backend, virtual WebAuthn authenticator, fake wallet material, and masked local credentials replace Vault, Stripe, cloud, and physical-authenticator dependencies."
+  },
+  "output": {
+    "video": "recording.webm",
+    "trace": "trace.zip",
+    "timeline": "timeline.json",
+    "screenshots": "screenshots/*.png"
+  },
+  "flows": [
+    {
+      "id": "extension-demo",
+      "title": "Actual unpacked extension demo",
+      "source": "extension/dist + extension/demo/dist",
+      "description": "Loads the real Manifest V3 extension in a persistent Chromium profile, configures it with fake loopback settings, and drives the real Wallet Standard demo through virtual WebAuthn.",
+      "steps": [
+        {
+          "id": "configure",
+          "section": "Extension setup",
+          "title": "Configure the trusted worker",
+          "description": "Point the unpacked extension at the loopback fixture. The password field contains only a fake local marker and remains visually masked.",
+          "targets": ["#backendUrl", "#settingsForm"]
+        },
+        {
+          "id": "discover",
+          "section": "Wallet Standard",
+          "title": "Discover the actual extension",
+          "description": "Open the bundled extension demo and wait for its Wallet Standard registration event.",
+          "targets": ["#walletStatus", ".status-row"]
+        },
+        {
+          "id": "register",
+          "section": "Passkey registration",
+          "title": "Register a fixture passkey",
+          "description": "Chrome's CDP virtual authenticator completes the real browser WebAuthn API while the local fixture records only public credential data.",
+          "targets": ["#register"]
+        },
+        {
+          "id": "sign-message",
+          "section": "Vault-backed interface",
+          "title": "Authorize a message signature",
+          "description": "Exercise the real provider, content script, service worker, backend request shape, and WebAuthn assertion path with a deterministic fixture signature.",
+          "targets": ["#signMessage"]
+        },
+        {
+          "id": "sign-transaction",
+          "section": "Solana transaction",
+          "title": "Sign a legacy transaction",
+          "description": "Prepare a deterministic zero-lamport transaction, approve it with virtual WebAuthn, and return bytes signed by the fixture-only Solana key.",
+          "targets": ["#signTransaction"]
+        }
+      ]
+    },
+    {
+      "id": "standalone-wallet",
+      "title": "Standalone wallet page",
+      "source": "services/public",
+      "description": "Drives the real standalone acceptance page against the loopback fixture using an Ethereum EIP-191 example and virtual WebAuthn.",
+      "steps": [
+        {
+          "id": "overview",
+          "section": "Wallet",
+          "title": "Review the custody boundary",
+          "description": "The page explains that key material remains behind the backend boundary; fixture mode uses no real funds or secrets.",
+          "targets": [".boundary", ".hero"]
+        },
+        {
+          "id": "select-chain",
+          "section": "Chain abstraction",
+          "title": "Choose Ethereum messages",
+          "description": "Select the implemented Ethereum EIP-191 message path without implying Ethereum transaction support.",
+          "targets": ["#chain-register", "#chain-sign"]
+        },
+        {
+          "id": "register",
+          "section": "Registration",
+          "title": "Register the fixture wallet",
+          "description": "Complete navigator.credentials.create with the virtual authenticator and a deterministic fixture address.",
+          "targets": ["#register"]
+        },
+        {
+          "id": "prepare",
+          "section": "Signing intent",
+          "title": "Prepare a test message",
+          "description": "Encode a clearly synthetic local message as the payload bound to the next ceremony.",
+          "targets": ["#message", "#transaction"]
+        },
+        {
+          "id": "sign",
+          "section": "Authorization",
+          "title": "Approve the signature",
+          "description": "Complete navigator.credentials.get and display a deterministic fixture result, never a production signature.",
+          "targets": ["#authenticate"]
+        }
+      ]
+    },
+    {
+      "id": "developer-dashboard",
+      "title": "Developer dashboard",
+      "source": "built services /developer route + recording-only memory billing runtime",
+      "description": "Explains developer onboarding, masked API credentials, endpoint usage, and the transition from sandbox to production.",
+      "steps": [
+        {
+          "id": "login",
+          "section": "Fixture session",
+          "title": "Sign in to the real console route",
+          "description": "Submit a clearly fake demo account through the actual login, session-cookie, redirect, and role-check path.",
+          "targets": [
+            "form[action=\"/developer/login\"]",
+            "input[name=\"email\"]"
+          ]
+        },
+        {
+          "id": "overview",
+          "section": "Developer home",
+          "title": "Review the integration health",
+          "description": "Start from seeded local billing and usage data without any external Stripe, Metronome, or cloud dependency.",
+          "targets": [
+            "[data-recording=\"developer-overview\"]",
+            "main h1",
+            "h1"
+          ]
+        },
+        {
+          "id": "api-keys",
+          "section": "Credentials",
+          "title": "Open API key management",
+          "description": "Show lifecycle and scope controls while all credential values remain masked and fixture-only.",
+          "targets": [
+            "[data-recording=\"developer-api-keys\"]",
+            "[href*=\"keys\"]",
+            "text=API keys"
+          ]
+        },
+        {
+          "id": "create-key",
+          "section": "Credentials",
+          "title": "Prepare a sandbox credential",
+          "description": "Fill synthetic scope metadata without submitting the form, so the recording never creates, renders, or stores an API token value.",
+          "targets": [
+            "[data-recording=\"developer-create-key\"]",
+            "button:has-text(\"Create\")"
+          ]
+        },
+        {
+          "id": "usage",
+          "section": "Observability",
+          "title": "Inspect endpoint usage",
+          "description": "Review deterministic active-wallet and transaction usage against seeded plan limits without a live metering provider.",
+          "targets": [
+            "[data-recording=\"developer-usage\"]",
+            "[href*=\"usage\"]",
+            "text=Usage"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin-dashboard",
+      "title": "Admin dashboard",
+      "source": "built services /admin route + recording-only memory billing runtime",
+      "description": "Walks through tenant operations, policy state, and audit review using synthetic local records.",
+      "steps": [
+        {
+          "id": "login",
+          "section": "Fixture session",
+          "title": "Sign in to the real admin route",
+          "description": "Submit a clearly fake administrator account through the actual login, session-cookie, redirect, and role-check path.",
+          "targets": ["form[action=\"/admin/login\"]", "input[name=\"email\"]"]
+        },
+        {
+          "id": "overview",
+          "section": "Operations",
+          "title": "Review system posture",
+          "description": "Begin with a deterministic status summary that is explicitly not connected to production infrastructure.",
+          "targets": ["[data-recording=\"admin-overview\"]", "main h1", "h1"]
+        },
+        {
+          "id": "tenants",
+          "section": "Tenant operations",
+          "title": "Open the tenant directory",
+          "description": "Navigate synthetic tenants and their scoped wallet policies without exposing personal data.",
+          "targets": [
+            "[data-recording=\"admin-tenants\"]",
+            "[href*=\"tenant\"]",
+            "text=Tenants"
+          ]
+        },
+        {
+          "id": "select-tenant",
+          "section": "Tenant operations",
+          "title": "Inspect the seeded fixture account",
+          "description": "Select the clearly named Spiral Safe seeded demo account and review its synthetic policy and usage state.",
+          "targets": [
+            "[data-recording=\"admin-select-tenant\"]",
+            "text=Acme Sandbox"
+          ]
+        },
+        {
+          "id": "audit",
+          "section": "Audit trail",
+          "title": "Review delivery state",
+          "description": "Display synthetic usage-outbox counts with no credentials, authenticator blobs, or production identifiers.",
+          "targets": [
+            "[data-recording=\"admin-audit\"]",
+            "[href*=\"audit\"]",
+            "text=Audit"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -69,9 +69,12 @@ Signing is also two-step:
    `{username, chain, operation, payload}` returns assertion options and a new
    `ceremonyId`. `payload` is standard base64; `rawTx` remains a Solana legacy
    alias.
-2. `POST /complete` with `{username, chain, ceremonyId, credential}` consumes
-   the ID and returns `encodedTX` for a transaction or `signature` for a
-   message.
+2. `POST /complete` with
+   `{username, chain, operation, ceremonyId, credential}` consumes the ID and
+   returns `encodedTX` for a transaction or `signature` for a message. The
+   operation defaults to `transaction` for backward compatibility, but message
+   callers must send `message`. The adapter returns output only when Vault's
+   stored ceremony operation matches the requested operation.
 
 Ceremonies expire after two minutes, are single-use, and are limited to eight
 outstanding ceremonies per wallet. This binds concurrent extension tabs to
@@ -81,28 +84,31 @@ unauthenticated probe endpoints.
 
 ## HTTP and Vault authentication
 
-The adapter fails at startup unless it has an API credential map, a CORS
-allowlist, and a Vault authentication method. Outside explicit
-`SERVICE_DEV_MODE=true`, it also rejects short API tokens, HTTP web origins,
-and every static `VAULT_TOKEN`; production uses a named Kubernetes role to
-obtain short-lived workload tokens. A Vault root token cannot be identified by
-its text format, so checking only for the literal development token would not
-be a security boundary.
+The adapter fails at startup unless it has an API credential source, a CORS
+allowlist, and a Vault authentication method. The source is either the static
+principal map described below or PostgreSQL-backed account API keys when
+billing is enabled. Outside explicit `SERVICE_DEV_MODE=true`, the adapter also
+rejects short static API tokens, HTTP web origins, and every static
+`VAULT_TOKEN`; production uses a named Kubernetes role to obtain short-lived
+workload tokens. A Vault root token cannot be identified by its text format, so
+checking only for the literal development token would not be a security
+boundary.
 
-Production-oriented environment variables are:
+For a billing-disabled deployment, the static-principal environment variables
+are:
 
-| Variable                                 | Purpose                                                                                            |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Variable                                 | Purpose                                                                                                                                   |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `API_TOKEN_HASHES`                       | JSON map of SHA-256 token hex to `{tenant, users}`; binds each production credential to explicit usernames without storing its plaintext. |
-| `CORS_ALLOWED_ORIGINS`                   | Comma-separated exact HTTPS or `chrome-extension://` origins.                                      |
-| `VAULT_ADDRESS`                          | Vault API origin.                                                                                  |
-| `VAULT_K8S_ROLE`                         | Enables Vault Kubernetes auth rather than a static token.                                          |
-| `VAULT_K8S_JWT_PATH`                     | Projected service-account token path.                                                              |
-| `VAULT_K8S_AUTH_PATH`                    | Auth mount, default `auth/kubernetes`.                                                             |
-| `WEBAUTHN_RP_ID`                         | WebAuthn relying-party ID passed to the Vault plugin.                                              |
-| `WEBAUTHN_RP_ORIGINS`                    | Exact comma-separated origins passed to the plugin.                                                |
-| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` | Per-tenant/IP process limit.                                                                       |
-| `RATE_LIMIT_BUCKETS`                     | Memory bound for local rate-limit buckets.                                                         |
+| `CORS_ALLOWED_ORIGINS`                   | Comma-separated exact HTTPS or `chrome-extension://` origins.                                                                             |
+| `VAULT_ADDRESS`                          | Vault API origin.                                                                                                                         |
+| `VAULT_K8S_ROLE`                         | Enables Vault Kubernetes auth rather than a static token.                                                                                 |
+| `VAULT_K8S_JWT_PATH`                     | Projected service-account token path.                                                                                                     |
+| `VAULT_K8S_AUTH_PATH`                    | Auth mount, default `auth/kubernetes`.                                                                                                    |
+| `WEBAUTHN_RP_ID`                         | WebAuthn relying-party ID passed to the Vault plugin.                                                                                     |
+| `WEBAUTHN_RP_ORIGINS`                    | Exact comma-separated origins passed to the plugin.                                                                                       |
+| `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` | Per-tenant/IP process limit.                                                                                                              |
+| `RATE_LIMIT_BUCKETS`                     | Memory bound for local rate-limit buckets.                                                                                                |
 
 `API_TOKENS` and `API_TOKEN`/`API_TENANT`/`API_USERS` remain bootstrap options;
 `VAULT_TOKEN` is development-only. Outside development mode, every token mapping
@@ -113,7 +119,14 @@ with short-lived token rotation and revocation. The adapter never needs a root
 token. The Kubernetes manifests include an engine-scoped policy and
 workload-auth role.
 
-Production hash-map shape:
+Production `BILLING_MODE=postgres` does not use this map: it rejects
+`API_TOKEN_HASHES`, `API_TOKENS`, and `API_TOKEN`, then authenticates
+one-time-reveal `ssk_live_...` keys from PostgreSQL. Those keys resolve the
+account, tenant, scopes, and non-empty username allowlist server-side. See the
+account section and [`docs/BILLING.md`](docs/BILLING.md) before choosing a
+deployment mode.
+
+Billing-disabled production hash-map shape:
 
 ```json
 {
@@ -123,6 +136,28 @@ Production hash-map shape:
   }
 }
 ```
+
+## Account platform and usage billing
+
+The adapter now has an optional account layer with PostgreSQL production
+storage, one-time-reveal hashed API keys, scoped username authorization,
+subscription/quota gates, durable usage/outbox records, and developer/admin
+consoles. Production `BILLING_MODE=postgres` is intentionally fail-closed: it
+requires Stripe for the base subscription, Metronome as the usage-rating path,
+and both environment-level and per-account confirmation that Metronome will
+invoice the matching Stripe customer. The memory store and `sandbox`/`launch`/
+`scale` tiers are labeled development fixtures only.
+
+`/create`, `/check`, and `/signin` count the first successful use of each opaque
+wallet per billing period. Only a successful transaction `/complete` counts a
+transaction unit; message signatures, including Ethereum EIP-191, do not.
+Reservations prevent concurrent quota oversubscription; committed usage is
+exported asynchronously and never blocks signing on Metronome delivery. See
+[`docs/BILLING.md`](docs/BILLING.md) for migrations, all environment variables,
+Stripe/Metronome provisioning, Checkout recovery, tax release gates, security
+boundaries, and the documented crash/reconciliation underbilling window. A
+redacted starting configuration is in
+[`.env.billing.example`](.env.billing.example).
 
 ## WebAuthn verification
 
@@ -184,6 +219,21 @@ the dependency graph as Vault SDK releases change.
 The bounded all-endpoint load suite lives in [`load-test/`](load-test/). Its
 defaults are loopback-only; do not aim it at a shared environment without
 authorization.
+
+## Annotated product recordings
+
+The Playwright recorder drives the actual unpacked extension demo and standalone
+wallet page, plus developer and admin dashboard walkthroughs. Each action has a
+numbered on-page callout, highlighted target, screenshot, trace entry, and
+timeline entry. Videos are native WebM files.
+
+Vault, Stripe, cloud services, real RPCs, production credentials, and physical
+authenticators are replaced by a visibly labeled loopback fixture and Chrome
+DevTools Protocol virtual authenticator. The dashboard flows build and serve the
+actual `/developer` and `/admin` console routes, log in through their real
+session path, and supply an in-memory demo billing runtime plus fake Vault
+boundary. See [`recording/README.md`](recording/README.md) for the run commands,
+selector contract, CSP assertion, output manifest, and trust boundary.
 
 The Makefile can build and register the plugin against a separately installed
 Vault development server. Live Solana devnet scripts are explicit commands and

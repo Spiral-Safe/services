@@ -12,6 +12,4 @@ exec veil-daemon \
   -ext-port 8443 \
   -int-port 8080 \
   -dns-resolver 10.0.0.1 \
-  -wait-for-app \
-  -app-web-srv http://127.0.0.1:8200 \
   -app-cmd /usr/local/bin/start-vault

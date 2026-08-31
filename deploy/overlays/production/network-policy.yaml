@@ -59,6 +59,26 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+    # Billing stays fail-closed by default. These podSelectors permit only
+    # same-namespace destination pods carrying the reviewed, purpose-specific
+    # label. They do not select a Service, another namespace, a DNS name, or an
+    # external provider. Managed database and Stripe/Metronome routes are
+    # deployment-specific and require a separate operator-owned policy (or a
+    # reviewed same-namespace gateway) rather than opening 0.0.0.0/0 here.
+    - to:
+        - podSelector:
+            matchLabels:
+              spiral-safe.io/billing-database: "allowed"
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              spiral-safe.io/billing-gateway: "allowed"
+      ports:
+        - port: 443
+          protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -4,53 +4,73 @@ image_tag := $(prog):$(version)
 image_tar := $(prog)-$(version).tar
 image_eif := $(prog)-$(version).eif
 tools_dir := .tools
+runtime_dir := .runtime
 plugin_sources := $(wildcard ../*.go ../cmd/spiral-safe/*.go) ../go.mod ../go.sum
+node_config_sources := $(wildcard config-renderer/*.go) config-renderer/go.mod
 
 veil_commit := 2b8c06ca651e09b21832f6fc4ae2605371386f76
-spiral_safe_revision := $(shell git -C .. rev-parse HEAD)
 
-ARCH ?= $(shell uname -m)
-ifeq ($(ARCH),aarch64)
-  override ARCH=arm64
-endif
-ifeq ($(ARCH),x86_64)
-  override ARCH=amd64
-endif
-
-VEIL_FQDN ?= spiral-safe.invalid
-WEBAUTHN_RP_ID ?= localhost
-WEBAUTHN_RP_ORIGINS ?= http://localhost:9080
+PLATFORM ?= linux/amd64
+NODE_MANIFEST ?= node-manifest.json
+SOURCE_DIR ?= ..
+CONFIG_OUTPUT ?= $(runtime_dir)/vault.hcl
+ENV_OUTPUT ?= $(runtime_dir)/plugin.env
+CHECK_FILES ?= true
 
 .DEFAULT_GOAL := image
 
-.PHONY: image
-image: $(image_tar)
+.PHONY: check-nitro-platform
+check-nitro-platform:
+	@test "$(PLATFORM)" = "linux/amd64" || { \
+		echo "Nitro EIF and pinned veil-verify builds require PLATFORM=linux/amd64" >&2; \
+		exit 1; \
+	}
 
-$(image_tar): Dockerfile start.sh start-vault.sh vault.hcl $(plugin_sources)
+.PHONY: image
+image: check-nitro-platform $(image_tar)
+
+$(image_tar): Dockerfile start.sh start-vault.sh $(node_config_sources) $(plugin_sources)
 	docker buildx build \
-		--platform linux/$(ARCH) \
+		--platform $(PLATFORM) \
 		--file Dockerfile \
 		--tag $(image_tag) \
 		--build-arg VEIL_COMMIT=$(veil_commit) \
-		--build-arg SPIRAL_SAFE_REVISION=$(spiral_safe_revision) \
-		--build-arg VEIL_FQDN=$(VEIL_FQDN) \
-		--build-arg WEBAUTHN_RP_ID=$(WEBAUTHN_RP_ID) \
-		--build-arg WEBAUTHN_RP_ORIGINS=$(WEBAUTHN_RP_ORIGINS) \
 		--output type=docker,dest=$(image_tar) \
 		..
 
 .PHONY: tools
-tools:
+tools: check-nitro-platform
 	docker buildx build \
-		--platform linux/$(ARCH) \
+		--platform $(PLATFORM) \
 		--file Dockerfile \
 		--target veil-tools \
 		--build-arg VEIL_COMMIT=$(veil_commit) \
 		--output type=local,dest=$(tools_dir) \
 		..
 
+.PHONY: native-config
+native-config:
+	mkdir -p $(tools_dir)
+	go -C config-renderer build -trimpath -o ../$(tools_dir)/spiral-node-config .
+
+.PHONY: validate-config
+validate-config: native-config
+	$(tools_dir)/spiral-node-config \
+		-input $(NODE_MANIFEST) \
+		-validate-only \
+		-check-files=$(CHECK_FILES)
+
+.PHONY: render-config
+render-config: native-config
+	mkdir -p $(runtime_dir)
+	$(tools_dir)/spiral-node-config \
+		-input $(NODE_MANIFEST) \
+		-output $(CONFIG_OUTPUT) \
+		-env-output $(ENV_OUTPUT) \
+		-check-files=$(CHECK_FILES)
+
 .PHONY: eif
-eif: $(image_eif)
+eif: check-nitro-platform $(image_eif)
 
 $(image_eif): $(image_tar)
 	docker load --input $<
@@ -60,9 +80,38 @@ $(image_eif): $(image_tar)
 
 .PHONY: run
 run: tools $(image_eif)
-	./run-enclave.sh $(image_eif) $(tools_dir)/veil-proxy
+	./run-enclave.sh $(image_eif) $(tools_dir)/veil-proxy $(NODE_MANIFEST)
+
+.PHONY: verify-admission
+verify-admission: tools
+	SPIRAL_NODE_CONFIG_BIN=$(tools_dir)/spiral-node-config \
+	VEIL_VERIFY_BIN=$(tools_dir)/veil-verify \
+	./enroll-node.sh verify $(NODE_MANIFEST) $(image_eif) $(SOURCE_DIR)
+
+.PHONY: admit
+admit: tools
+	SPIRAL_NODE_CONFIG_BIN=$(tools_dir)/spiral-node-config \
+	VEIL_VERIFY_BIN=$(tools_dir)/veil-verify \
+	./enroll-node.sh admit $(NODE_MANIFEST) $(image_eif) $(SOURCE_DIR)
+
+.PHONY: check-membership
+check-membership: tools
+	SPIRAL_NODE_CONFIG_BIN=$(tools_dir)/spiral-node-config \
+	./enroll-node.sh check $(NODE_MANIFEST)
+
+.PHONY: simulate
+simulate:
+	./tests/same-image-simulation.sh
+
+.PHONY: test
+test:
+	go -C config-renderer test ./...
+	bash -n enroll-node.sh run-enclave.sh start-vault.sh start.sh tests/*.sh
+	shellcheck enroll-node.sh run-enclave.sh start-vault.sh start.sh tests/*.sh
+	./tests/same-image-simulation.sh
+	./tests/enroll-node-test.sh
 
 .PHONY: clean
 clean:
 	rm -f $(image_tar) $(image_eif)
-	rm -rf $(tools_dir)
+	rm -rf $(tools_dir) $(runtime_dir)

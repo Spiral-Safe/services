@@ -6,3 +6,4 @@
 /dist
 node_modules
 public/browser.js
+/recording/output/

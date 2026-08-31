@@ -1,123 +1,273 @@
-Spiral Safe Veil adapter for AWS Nitro Enclaves
-================================================
+Spiral Safe Veil quorum scaffold for AWS Nitro Enclaves
+=======================================================
 
-Status: buildable adapter and migration scaffold, not a production enclave
-release. It replaces the archived Nitriding build dependency with
-[Veil](https://github.com/Amnesic-Systems/veil), but Veil is not a drop-in
-Nitriding binary and the old lifecycle assumptions do not carry over.
+Status: fail-closed enrollment and same-image configuration scaffold, not a
+production Nitro quorum. It replaces the archived Nitriding build dependency
+with pinned [Veil](https://github.com/Amnesic-Systems/veil), but Veil is not a
+drop-in Nitriding replacement and it does not solve durable storage, cross-host
+routing, or secret delivery for Vault.
 
-What the adapter does
----------------------
+Implemented contract
+--------------------
 
-The image combines three pieces:
+One Linux/amd64 container image and the EIF built from it can be used for either
+the first Vault node or a joiner. Node-specific state is not a Docker build
+argument. A short-lived schema-v1 manifest selects `bootstrap` or `join` at run
+time and records these release/runtime inputs:
 
-1. Veil's `veil-daemon` runs inside the enclave. It establishes a VSOCK/TUN
-   tunnel, creates the attested TLS endpoint, and reverse-proxies HTTPS port
-   8443 to Vault's loopback-only HTTP listener.
-2. Vault 1.21.4 runs as the unprivileged `vault` user and loads the Spiral Safe
-   external plugin binary from `/vault/plugins`.
-3. Veil's `veil-proxy` runs as root on the enclave's EC2 parent and supplies
-   networking at `10.0.0.1`; the enclave is reachable from that parent at
-   `10.0.0.2:8443`.
+* the operator-declared OCI image digest, EIF SHA-384, Spiral Safe source
+  revision, and exact Veil revision;
+* a unique Vault Raft `node_id`, advertised API and cluster addresses, and an
+  odd minimum voter count of at least three;
+* a shared AWS KMS key identifier for auto-unseal, without embedding AWS
+  credentials;
+* node/server, operator CA, and join-client TLS file paths, never key contents;
+* one or more HTTPS `retry_join` leaders with CA, client certificate, client
+  key, and `leader_tls_servername` inputs;
+* explicit names for the operator-provided durable-storage bridge and
+  cross-host L4 route; and
+* WebAuthn RP configuration consumed by the Vault plugin.
 
-Veil's public endpoints (`/veil`, `/veil/config`, and `/veil/attestation`) and
-the proxied Vault API share the external TLS listener. Veil's internal control
-API listens on loopback port 8080. The image signals `/veil/ready` after the
-Vault listener starts.
+`config-renderer/` strictly decodes that manifest, rejects unknown fields,
+placeholders, expired admission windows longer than 30 minutes, unsafe paths,
+group/other-writable TLS trust files, weak private-key permissions, duplicate
+leaders, wrong Veil tunnel binds, and missing security requirements. It
+atomically renders mode-0600 Vault HCL and a validated plugin environment file.
+The manifest template is intentionally invalid until every `REPLACE_` and
+`REQUIRED_` value is supplied.
 
-Pinned source and licensing
----------------------------
+The renderer validates only the syntax and non-placeholder value of
+`image.digest`. Neither Nitro attestation nor the current enrollment script can
+recover and compare an OCI registry digest from a running EIF, so this field is
+release inventory, not a cryptographic admission claim. Bind it to signed build
+provenance in the external delivery system before treating it as authoritative.
+The current hardware identity inputs are the independently obtained EIF SHA-384
+and the PCR/nonce/TLS/source checks performed by `veil-verify`.
 
-The build verifies and compiles Veil v0.5.1 at commit
-`2b8c06ca651e09b21832f6fc4ae2605371386f76`. The image records the Veil and
-Spiral Safe source revisions as OCI labels. It also includes Veil's license at
-`/licenses/veil-GPL-3.0.txt` and declares `GPL-3.0-only` in its license label.
+Network boundary proven from pinned Veil source
+-----------------------------------------------
 
-Veil is GPL-3.0 licensed. Distributing an image that contains a Veil binary can
-create GPL notice and corresponding-source obligations, and combining it with
-other software may require additional analysis. Keep the exact source pin,
-license file, build instructions, and a durable source offer with every image;
-obtain legal review before external distribution. This is engineering guidance,
-not a license opinion. The image also carries the Spiral Safe Apache-2.0 license
-at `/licenses/spiral-safe-Apache-2.0.txt`. Vault 1.21.4 is distributed under
-BUSL-1.1, so a distributor must also review and satisfy HashiCorp's current
-Vault license terms. The OCI license label names all three licenses; it is
-metadata, not a substitute for notices, source delivery, or legal review.
+Veil revision `2b8c06ca651e09b21832f6fc4ae2605371386f76` creates one VSOCK
+connection carrying a full IP TUN. The EC2 parent is `10.0.0.1` and its enclave
+is `10.0.0.2`, so one EIF can listen on several TCP ports over that tunnel.
 
-The Go 1.26 builder and Vault images are pinned by immutable multi-platform
-digest. Vault 1.21.4 is a patched 1.x release and the plugin
-registration/startup smoke test is part of this migration's verification path.
-Continue normal upgrade and security review rather than treating either pin as
-permanent.
+| Port | Purpose | Authentication boundary |
+| --- | --- | --- |
+| `8443` | Veil `/veil`, `/veil/config`, and `/veil/attestation` | nonce-bound Nitro attestation and attested ephemeral TLS key |
+| `18200` | Vault HTTPS API on `10.0.0.2` | operator/client CA mTLS plus normal Vault authorization |
+| `18201` | Vault Raft cluster transport on `10.0.0.2` | Vault cluster TLS; never public ingress |
+| `8200` | enclave-loopback Vault listener | enclave-local only |
 
-Build without launching an enclave
------------------------------------
+The Veil HTTPS listener is intentionally attestation-only in this scaffold. Its
+single reverse-proxy facility cannot require the independent client certificate
+used by the Vault API, so exposing Vault through it would bypass the manifest's
+mTLS admission boundary.
 
-From this directory:
+The identical image bakes `spiral-safe-attestation.invalid` as Veil's shared
+certificate name. This is a measured sentinel, not a routable per-node FQDN and
+not a browser-compatible PKI identity. Pinned Veil's verifier deliberately
+connects with ordinary certificate/hostname verification disabled because the
+certificate is authenticated by attestation instead. It hashes the leaf
+certificate actually presented by that connection and requires the exact hash
+inside the fresh, nonce-bound attestation document before comparing PCRs. Thus
+each manifest's `node.veilAddress` is only the operator-routed address used to
+reach that node; distinct addresses or ports can reach distinct nodes while all
+nodes retain the same measured EIF and shared sentinel certificate name.
 
-    VEIL_FQDN=vault.example.com \
-      WEBAUTHN_RP_ID=wallet.example.com \
-      WEBAUTHN_RP_ORIGINS=https://wallet.example.com \
-      make image
+Only the official pinned `veil-verify` flow may consume port 8443. Do not treat
+the `.invalid` certificate as a normal CA identity, add it to a trust store, or
+replace verification with a generic `curl -k` check. If a normal hostname-valid
+Veil frontend is required, per-node run-time FQDN delivery before Veil starts is
+an additional unresolved blocker because Nitro CLI cannot inject it. This
+scaffold intentionally does not claim that mode.
+
+Veil does not provide a cross-host router or a multi-listener L4 publishing
+configuration. Moreover, every host/enclave pair reuses `10.0.0.1/10.0.0.2`.
+An operator must therefore supply a reviewed private overlay or per-host
+forwarder that maps each node's unique API and cluster addresses to its local
+TUN. Security groups must expose `18200` only to authorized operators/services
+and `18201` only to admitted peers. The string in `externalL4Route` records the
+approved implementation; the renderer does not create it.
+
+Pinned source, images, and licensing
+------------------------------------
+
+The Docker build fetches and verifies Veil v0.5.1 at commit
+`2b8c06ca651e09b21832f6fc4ae2605371386f76`. Go 1.26 and Vault 1.21.4 are
+digest-pinned multi-platform images. The build runs the node-renderer tests and
+builds the current Spiral Safe plugin before producing the final image. The
+image records the Veil source and manifest schema as OCI labels.
+
+Veil is GPL-3.0 licensed. Distributing an image containing its binaries can
+create notice and corresponding-source obligations. Keep the exact pin, Veil
+license at `/licenses/veil-GPL-3.0.txt`, reproducible build instructions, and a
+durable source offer with every distributed image. Obtain legal review before
+external distribution. Vault 1.21.4 is BUSL-1.1 and Spiral Safe is Apache-2.0;
+review and satisfy all applicable license terms. OCI labels are metadata, not a
+substitute for notices or source delivery.
+
+Build and local topology proof
+------------------------------
+
+From `services/nitro`:
+
+    make image
     make tools
+    make test
 
-`make image` creates an ordinary Linux container archive. `make tools` exports
-the pinned Linux `veil-proxy` and `veil-verify` binaries into the ignored
-`.tools/` directory. Neither target invokes `nitro-cli` or changes enclave
-state. The FQDN becomes part of the image and therefore part of its enclave
-measurements; use the real immutable deployment name before producing a release
-EIF. The WebAuthn relying-party inputs are also measured image inputs and must
-match the browser origin that completes each ceremony.
+`make image` produces an ordinary Linux container archive and does not launch
+an enclave. `make tools` exports the pinned Linux/amd64 `veil-proxy`,
+`veil-verify`, and `spiral-node-config` binaries to ignored `.tools/`.
+`make test` needs Go, `jq`, and ShellCheck on the host.
 
-EIF and explicit EC2-host operation
------------------------------------
+The two-node simulation renders a bootstrap manifest and a join manifest with
+the same image identity and KMS key, distinct node IDs and temporary Raft
+directories, a separate API/cluster bind, and mTLS `retry_join`:
 
-EIF creation requires an enclave-enabled EC2 parent with the Nitro Enclaves CLI:
+    make simulate
 
-    make eif
+This is only topology/configuration proof. Temporary host directories are not
+Nitro persistence, and the simulation does not claim a live Vault quorum, KMS,
+cross-host routing, or real attestation.
 
-Launching is deliberately separate and has no "terminate all" behavior:
+EIF and admission workflow
+--------------------------
 
-    make run
+EIF creation and launch require a Linux/amd64 enclave-enabled EC2 parent with
+the Nitro Enclaves CLI. No Make target terminates an enclave or performs an
+unscoped lifecycle operation.
 
-The run script starts the pinned `veil-proxy`, launches one named enclave
-without debug mode or an attached console, and then keeps the proxy in the
-foreground. It does not terminate the enclave on exit. Host routing, security
-groups, a public load balancer, DNS, and access to `10.0.0.2:8443` remain
-operator responsibilities. Follow the
-[AWS Nitro Enclaves guide](https://docs.aws.amazon.com/enclaves/latest/user/)
-and Veil's source and examples rather than the removed Nitriding host setup.
+1. Build one release image and EIF from a clean pinned checkout:
 
-Unresolved security and lifecycle boundaries
---------------------------------------------
+       make image eif tools
 
-The adapter proves that Veil can wrap the local Vault listener, but it does not
-make the overall system production-safe:
+2. Copy `same-image-manifest.template.json` outside the source tree. Fill the
+   exact image/EIF/source pins, a unique node ID, role, routable node addresses,
+   TLS paths, shared KMS key ID, WebAuthn values, and an admission window of at
+   most 30 minutes. A bootstrap manifest has no leaders or join TLS fields; a
+   joiner has at least one mTLS `retry_join` leader.
 
-* Nitro Enclaves have no persistent storage. `/vault/data` disappears with the
-  enclave. The Kubernetes Raft deployment in `../deploy/` is durable, but it
-  runs outside the enclave and is a separate topology. An enclave release needs
-  a reviewed, attested protocol that encrypts and commits state to durable
-  storage outside the enclave.
-* Vault starts uninitialized and sealed. There is no attestation-aware bootstrap
-  client that verifies Veil, pins its generated TLS key, initializes Vault, and
-  delivers recovery material without exposing it to the parent. Standard Vault
-  CLI TLS validation alone is not that protocol.
-* Plugin registration and enabling require an authorized Vault operator after
-  initialization. The image does not contain a root token, fixed checksum, KMS
-  credential, or automatic privileged bootstrap.
-* Veil provides attestation endpoints and `veil-verify`, but Spiral Safe still
-  needs an EC2 integration test that builds the release EIF twice, verifies its
-  measurements and application hash, checks nonce-bound attestation, and rejects
-  altered images.
-* No attestation-bound KMS or workload-identity policy has been implemented for
-  this image. Static AWS credentials must never be embedded in an image or EIF.
-* The Express API, browser client, authorization layer, and load tests are not
-  inside this EIF. Kubernetes and enclave deployment are currently separate
-  operational modes.
-* `veil-proxy` requires root, `/dev/net/tun`, NAT changes, and VSOCK access on
-  the EC2 parent. Those privileges must be isolated and monitored.
+3. Validate before launch:
 
-Do not call this path production-ready until persistence, bootstrap, attested
-identity, KMS policy, disaster recovery, upgrades, and end-to-end transaction
-signing are exercised on enclave-enabled EC2 hardware.
+       NODE_MANIFEST=/secure/node-a.json CHECK_FILES=false make validate-config
+
+4. Launch the named EIF and parent Veil proxy:
+
+       NODE_MANIFEST=/secure/node-a.json make run
+
+   Nitro CLI cannot inject environment variables or files into a running EIF.
+   The image therefore starts Veil first for attestation while Vault waits for
+   `/run/spiral-safe/node-manifest.json`. The current scaffold deliberately has
+   no generic upload endpoint.
+
+5. From a disposable clean checkout at the manifest's exact source revision,
+   verify the running enclave. `veil-verify` rebuilds the pinned Dockerfile,
+   compares PCRs, verifies a fresh nonce, and binds the TLS certificate to the
+   attestation document:
+
+       NODE_MANIFEST=/secure/node-a.json \
+       SOURCE_DIR=/secure/clean-services-checkout \
+       make verify-admission
+
+   Verification fails if the renderer, EIF hash, source revision, exact Veil
+   pin, clean-tree check, official verifier, or expected revision check fails.
+   A verifier-created `enclave.tar` is removed after the attempt.
+
+6. Configure an absolute executable `SPIRAL_ENROLLMENT_HOOK` backed by the
+   operator's admission service, then run `make admit`. The hook is called only
+   after successful Veil verification and receives the verified node ID and EIF
+   SHA-384 as environment metadata. Its stdout must be exactly one short-lived
+   `file:/...` or `secret-ref://...` reference of at most 512 characters:
+
+       SPIRAL_ENROLLMENT_HOOK=/opt/spiral/bin/issue-enrollment \
+       NODE_MANIFEST=/secure/node-a.json \
+       SOURCE_DIR=/secure/clean-services-checkout \
+       make admit
+
+   The command prints only that reference, never the manifest contents, TLS
+   private keys, AWS credentials, Vault token, recovery material, or bundle.
+   The external admission system must bind the reference to the verified EIF,
+   expire it, authorize one node ID, issue least-privilege TLS/KMS identity, and
+   deliver the manifest plus referenced files over an independently reviewed
+   attestation-bound channel. That delivery agent is not implemented by Veil or
+   this repository and is a production blocker.
+
+7. After Vault is initialized/unsealed and a joiner has converged, use a
+   short-lived operator token and separate client certificate to prove the
+   exact voter and advertised cluster address, an odd voter count at or above
+   the minimum, and healthy Autopilot failure tolerance for that actual count:
+
+       VAULT_CACERT=/secure/operator-ca.crt \
+       VAULT_CLIENT_CERT=/secure/operator.crt \
+       VAULT_CLIENT_KEY=/secure/operator.key \
+       VAULT_TLS_SERVER_NAME=vault.internal \
+       VAULT_TOKEN=REDACTED \
+       NODE_MANIFEST=/secure/node-a.json \
+       make check-membership
+
+The membership check uses `vault status`, `vault operator raft list-peers`, and
+`vault operator raft autopilot state`. It never prints the token.
+
+Persistence and auto-unseal boundary
+------------------------------------
+
+Nitro Enclaves have no durable local block storage. `/vault/data` disappears
+with the enclave. `durableStorageBridge` is a required declaration, not an
+implementation. A production voter needs an attested external bridge with
+POSIX-compatible durability, ordering and fsync behavior, encryption and
+rollback protection, crash recovery, fencing, per-node isolation, snapshot and
+restore tests, and a threat model showing the parent cannot fork or rewind Raft
+state. An object-store copy loop is not a safe substitute.
+
+All nodes must refer to the same approved auto-unseal key, but the `awskms`
+stanza alone does not prove that KMS access is bound to Nitro measurements.
+Never embed IAM access keys or KMS credentials. The external admission/delivery
+system must provide an attestation-bound workload identity or a narrowly scoped
+KMS proxy and must demonstrate failover and recovery. Until both this identity
+path and durable storage exist, do not admit these enclaves as production Raft
+voters.
+
+Removal, rollback, and recovery
+-------------------------------
+
+Admission failure is fail-closed: do not release a bundle, identity, or TLS
+certificate. Before a candidate becomes a voter, revoke its short-lived bundle
+reference and issued identity, then discard its candidate storage.
+
+After a node is a voter, do not simply terminate it or reuse its data directory.
+First confirm quorum and Autopilot health from a different authorized node,
+remove the exact peer with the reviewed `vault operator raft remove-peer`
+procedure, confirm the remaining peer list and failure tolerance, revoke its TLS
+and KMS authorization, remove its private routes, and only then destroy or
+quarantine its durable state. Preserve an odd healthy voter count. A replacement
+gets a new unique node ID and a fresh admission; old Raft data must not be
+silently attached to another identity.
+
+Backups require encrypted, authenticated Raft snapshots in off-host storage and
+regular restore/quorum-loss exercises. The external durability layer must also
+define anti-rollback counters and disaster recovery; neither Veil nor this
+scaffold supplies them.
+
+Unresolved release gates
+------------------------
+
+The following are intentionally not claimed or emulated:
+
+* real Nitro PCR/nonce/TLS verification on enclave-enabled EC2 hardware;
+* an attested manifest/secret receiver inside the EIF;
+* durable, rollback-protected enclave storage for voting Raft members;
+* cross-host routing for the reused Veil TUN subnet;
+* attestation-bound shared auto-unseal identity and KMS policy;
+* a live three-node Vault quorum, rolling upgrades, snapshots/restores, failure
+  injection, and quorum-loss recovery; and
+* end-to-end service signing through the enclave topology.
+
+Primary references
+------------------
+
+* [Pinned Veil source](https://github.com/Amnesic-Systems/veil/tree/2b8c06ca651e09b21832f6fc4ae2605371386f76)
+* [Pinned verifier certificate/attestation binding](https://github.com/Amnesic-Systems/veil/blob/2b8c06ca651e09b21832f6fc4ae2605371386f76/cmd/veil-verify/attestation.go)
+* [Vault integrated Raft storage](https://developer.hashicorp.com/vault/docs/configuration/storage/raft)
+* [Vault Raft operator commands](https://developer.hashicorp.com/vault/docs/commands/operator/raft)
+* [Vault HA with Raft and TLS](https://developer.hashicorp.com/vault/docs/deploy/kubernetes/helm/examples/ha-tls)
+* [Nitro `run-enclave` options](https://docs.aws.amazon.com/enclaves/latest/user/cmd-nitro-run-enclave.html)

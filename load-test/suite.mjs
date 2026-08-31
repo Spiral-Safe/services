@@ -21,6 +21,141 @@ const scenarioDefinitions = {
     authenticated: false,
     mutating: false,
   },
+  "console-css": {
+    method: "GET",
+    path: "/console.css",
+    expected: [200],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-login": {
+    method: "GET",
+    path: "/developer/login",
+    expected: [200, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-login-reject": {
+    method: "POST",
+    path: "/developer/login",
+    expected: [401, 403, 429],
+    authenticated: false,
+    mutating: false,
+    form: () => ({
+      email: "load-test-invalid@example.test",
+      password: "not-a-real-console-password",
+    }),
+  },
+  "developer-wall": {
+    method: "GET",
+    path: "/developer",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-usage-wall": {
+    method: "GET",
+    path: "/developer/api/usage",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-key-wall": {
+    method: "POST",
+    path: "/developer/api-keys",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-key-revoke-wall": {
+    method: "POST",
+    path: "/developer/api-keys/00000000-0000-4000-8000-000000000000/revoke",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-checkout-wall": {
+    method: "POST",
+    path: "/developer/billing/checkout",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-portal-wall": {
+    method: "POST",
+    path: "/developer/billing/portal",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "developer-logout-wall": {
+    method: "POST",
+    path: "/developer/logout",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-login": {
+    method: "GET",
+    path: "/admin/login",
+    expected: [200, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-login-reject": {
+    method: "POST",
+    path: "/admin/login",
+    expected: [401, 403, 429],
+    authenticated: false,
+    mutating: false,
+    form: () => ({
+      email: "load-test-invalid@example.test",
+      password: "not-a-real-console-password",
+    }),
+  },
+  "admin-wall": {
+    method: "GET",
+    path: "/admin",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-analytics-wall": {
+    method: "GET",
+    path: "/admin/api/analytics",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-account-wall": {
+    method: "POST",
+    path: "/admin/accounts",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-metronome-wall": {
+    method: "POST",
+    path: "/admin/accounts/00000000-0000-4000-8000-000000000000/metronome-verified",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "admin-logout-wall": {
+    method: "POST",
+    path: "/admin/logout",
+    expected: [303, 401],
+    authenticated: false,
+    mutating: false,
+  },
+  "stripe-webhook-reject": {
+    method: "POST",
+    path: "/billing/stripe/webhook",
+    expected: [400, 404],
+    authenticated: false,
+    mutating: false,
+    body: () => ({}),
+  },
   "auth-reject": {
     method: "POST",
     path: "/check",
@@ -54,7 +189,7 @@ const scenarioDefinitions = {
     body: ({ username, chain }) => ({
       username,
       chain,
-      ceremonyId: "L".repeat(32),
+      ceremonyId: Buffer.from(username).toString("base64url"),
       credential: {
         id: "a",
         rawId: "a",
@@ -85,7 +220,7 @@ const scenarioDefinitions = {
     body: ({ username, chain }) => ({
       username,
       chain,
-      ceremonyId: "L".repeat(32),
+      ceremonyId: Buffer.from(username).toString("base64url"),
       credential: {
         id: "a",
         rawId: "a",
@@ -100,8 +235,40 @@ const scenarioDefinitions = {
   },
 };
 
-const safeScenarioNames = ["healthz", "readyz", "auth-reject", "check"];
-const allScenarioNames = [...safeScenarioNames, "init", "create", "signin", "complete"];
+const consoleScenarioNames = [
+  "console-css",
+  "developer-login",
+  "developer-login-reject",
+  "developer-wall",
+  "developer-usage-wall",
+  "developer-key-wall",
+  "developer-key-revoke-wall",
+  "developer-checkout-wall",
+  "developer-portal-wall",
+  "developer-logout-wall",
+  "admin-login",
+  "admin-login-reject",
+  "admin-wall",
+  "admin-analytics-wall",
+  "admin-account-wall",
+  "admin-metronome-wall",
+  "admin-logout-wall",
+  "stripe-webhook-reject",
+];
+const safeScenarioNames = [
+  "healthz",
+  "readyz",
+  ...consoleScenarioNames,
+  "auth-reject",
+  "check",
+];
+const allScenarioNames = [
+  ...safeScenarioNames,
+  "init",
+  "create",
+  "signin",
+  "complete",
+];
 
 function usage() {
   console.log(`Usage: node load-test/suite.mjs [options]
@@ -151,7 +318,8 @@ function expandScenarios(values) {
   const expanded = requested.flatMap((name) => {
     if (name === "safe") return safeScenarioNames;
     if (name === "all") return allScenarioNames;
-    if (!scenarioDefinitions[name]) throw new Error(`unknown scenario: ${name}`);
+    if (!scenarioDefinitions[name])
+      throw new Error(`unknown scenario: ${name}`);
     return [name];
   });
   return [...new Set(expanded)];
@@ -189,15 +357,27 @@ export function parseArgs(argv, env = process.env) {
         index += 1;
         break;
       case "--requests":
-        config.requests = integer(nextValue(argv, index, option), option, 100_000);
+        config.requests = integer(
+          nextValue(argv, index, option),
+          option,
+          100_000,
+        );
         index += 1;
         break;
       case "--concurrency":
-        config.concurrency = integer(nextValue(argv, index, option), option, 256);
+        config.concurrency = integer(
+          nextValue(argv, index, option),
+          option,
+          256,
+        );
         index += 1;
         break;
       case "--timeout":
-        config.timeout = integer(nextValue(argv, index, option), option, 300_000);
+        config.timeout = integer(
+          nextValue(argv, index, option),
+          option,
+          300_000,
+        );
         index += 1;
         break;
       case "--chain":
@@ -208,9 +388,11 @@ export function parseArgs(argv, env = process.env) {
         const override = nextValue(argv, index, option);
         index += 1;
         const separator = override.indexOf("=");
-        if (separator < 1) throw new Error("--expect must use NAME=CODE[,CODE]");
+        if (separator < 1)
+          throw new Error("--expect must use NAME=CODE[,CODE]");
         const name = override.slice(0, separator);
-        if (!scenarioDefinitions[name]) throw new Error(`unknown scenario in --expect: ${name}`);
+        if (!scenarioDefinitions[name])
+          throw new Error(`unknown scenario in --expect: ${name}`);
         const codes = override
           .slice(separator + 1)
           .split(",")
@@ -252,21 +434,35 @@ export function parseArgs(argv, env = process.env) {
     throw new Error("--base-url must use http or https");
   }
   if (origin.username || origin.password || origin.search || origin.hash) {
-    throw new Error("--base-url cannot include credentials, a query, or a fragment");
+    throw new Error(
+      "--base-url cannot include credentials, a query, or a fragment",
+    );
   }
   const loopback = LOOPBACK_HOSTS.has(origin.hostname);
   if (!loopback && !config.allowRemote) {
     throw new Error("non-loopback targets require --allow-remote");
   }
   const selected = config.scenarios.map((name) => scenarioDefinitions[name]);
-  if (selected.some((scenario) => scenario.mutating) && !config.allowMutations) {
+  if (
+    selected.some((scenario) => scenario.mutating) &&
+    !config.allowMutations
+  ) {
     throw new Error("mutating scenarios require --allow-mutations");
   }
   if (selected.some((scenario) => scenario.authenticated) && !config.token) {
-    throw new Error("authenticated scenarios require --token or SPIRAL_SAFE_API_TOKEN");
+    throw new Error(
+      "authenticated scenarios require --token or SPIRAL_SAFE_API_TOKEN",
+    );
   }
-  if (!loopback && origin.protocol === "http:" && config.token && !config.insecureHttpRemote) {
-    throw new Error("refusing to send a token over remote HTTP without --insecure-http-remote");
+  if (
+    !loopback &&
+    origin.protocol === "http:" &&
+    config.token &&
+    !config.insecureHttpRemote
+  ) {
+    throw new Error(
+      "refusing to send a token over remote HTTP without --insecure-http-remote",
+    );
   }
   origin.pathname = origin.pathname.replace(/\/+$/, "");
   config.baseUrl = origin.toString().replace(/\/$/, "");
@@ -275,7 +471,9 @@ export function parseArgs(argv, env = process.env) {
 
 function percentile(sorted, fraction) {
   if (!sorted.length) return 0;
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
+  return sorted[
+    Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)
+  ];
 }
 
 function latencySummary(latencies) {
@@ -289,7 +487,7 @@ function latencySummary(latencies) {
   };
 }
 
-async function runScenario(config, name, runId) {
+async function runScenario(config, name, runId, fetchImpl) {
   const definition = scenarioDefinitions[name];
   const expected = config.expectedOverrides.get(name) || definition.expected;
   const statusCounts = new Map();
@@ -308,19 +506,37 @@ async function runScenario(config, name, runId) {
       const timer = setTimeout(() => controller.abort(), config.timeout);
       const requestStarted = performance.now();
       const headers = { accept: "application/json" };
-      if (definition.authenticated) headers.authorization = `Bearer ${config.token}`;
+      if (definition.authenticated)
+        headers.authorization = `Bearer ${config.token}`;
       const body = definition.body?.({ username, chain: config.chain });
+      const form = definition.form?.({ username, chain: config.chain });
       if (body !== undefined) headers["content-type"] = "application/json";
+      if (form !== undefined) {
+        headers["content-type"] = "application/x-www-form-urlencoded";
+        headers.origin = config.baseUrl;
+      }
 
       try {
-        const response = await fetch(`${config.baseUrl}${definition.path}`, {
-          method: definition.method,
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal: controller.signal,
-        });
+        const response = await fetchImpl(
+          `${config.baseUrl}${definition.path}`,
+          {
+            method: definition.method,
+            headers,
+            redirect: "manual",
+            body:
+              body !== undefined
+                ? JSON.stringify(body)
+                : form !== undefined
+                  ? new URLSearchParams(form).toString()
+                  : undefined,
+            signal: controller.signal,
+          },
+        );
         await response.arrayBuffer();
-        statusCounts.set(response.status, (statusCounts.get(response.status) || 0) + 1);
+        statusCounts.set(
+          response.status,
+          (statusCounts.get(response.status) || 0) + 1,
+        );
         if (!expected.includes(response.status)) unexpected += 1;
       } catch (error) {
         const errorName = error?.name || "Error";
@@ -346,16 +562,18 @@ async function runScenario(config, name, runId) {
     statuses: Object.fromEntries([...statusCounts].sort(([a], [b]) => a - b)),
     errors: Object.fromEntries(errorCounts),
     elapsedSeconds: Number((elapsedMs / 1_000).toFixed(3)),
-    requestsPerSecond: Number((latencies.length / (elapsedMs / 1_000)).toFixed(2)),
+    requestsPerSecond: Number(
+      (latencies.length / (elapsedMs / 1_000)).toFixed(2),
+    ),
     latencyMs: latencySummary(latencies),
   };
 }
 
-export async function run(config) {
+export async function run(config, fetchImpl = fetch) {
   const runId = randomUUID();
   const results = [];
   for (const name of config.scenarios) {
-    results.push(await runScenario(config, name, runId));
+    results.push(await runScenario(config, name, runId, fetchImpl));
   }
   return {
     baseUrl: config.baseUrl,
@@ -378,10 +596,12 @@ async function main() {
   }
   const result = await run(config);
   console.log(JSON.stringify(result, null, 2));
-  if (result.totals.completed === 0 || result.totals.unexpected > 0) process.exitCode = 1;
+  if (result.totals.completed === 0 || result.totals.unexpected > 0)
+    process.exitCode = 1;
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const invokedDirectly =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   main().catch((error) => {
     console.error(`load test configuration error: ${error.message}`);

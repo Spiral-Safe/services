@@ -229,6 +229,7 @@ document.getElementById("authenticate").addEventListener("click", async () => {
       username,
       chain,
       ceremonyId: authenticationCeremonyId,
+      operation: signingOperation,
       credential: serializeAssertionCredential(credential),
     });
     authenticationCeremonyId = "";

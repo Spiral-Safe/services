@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "image": {
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "eifSha384": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "sourceRevision": "0000000000000000000000000000000000000000",
+    "veilRevision": "2b8c06ca651e09b21832f6fc4ae2605371386f76"
+  },
+  "node": {
+    "mode": "join",
+    "id": "REPLACE_NODE_ID",
+    "raftPath": "/vault/data",
+    "pluginDirectory": "/vault/plugins",
+    "veilAddress": "https://REPLACE_NODE_HOST.invalid:8443",
+    "apiAddress": "https://REPLACE_NODE_HOST.invalid:18200",
+    "clusterAddress": "https://REPLACE_NODE_HOST.invalid:18201",
+    "loopbackApiBind": "127.0.0.1:8200",
+    "tunnelApiBind": "10.0.0.2:18200",
+    "tunnelClusterBind": "10.0.0.2:18201",
+    "durableStorageBridge": "REQUIRED_ATTESTED_DURABLE_STORAGE_BRIDGE",
+    "externalL4Route": "REQUIRED_PRIVATE_CROSS_HOST_L4_ROUTE"
+  },
+  "application": {
+    "webAuthnRpId": "REPLACE_WALLET_RP_ID",
+    "webAuthnRpOrigins": [
+      "https://REPLACE_EXTENSION_ORIGIN.invalid"
+    ]
+  },
+  "tls": {
+    "certificateFile": "/run/spiral-safe/secrets/node.crt",
+    "privateKeyFile": "/run/spiral-safe/secrets/node.key",
+    "clientCAFile": "/run/spiral-safe/secrets/operator-ca.crt",
+    "joinCAFile": "/run/spiral-safe/secrets/raft-ca.crt",
+    "joinClientCertFile": "/run/spiral-safe/secrets/raft-client.crt",
+    "joinClientKeyFile": "/run/spiral-safe/secrets/raft-client.key",
+    "leaderServerName": "REPLACE_LEADER_TLS_SERVER_NAME"
+  },
+  "leaders": {
+    "apiAddresses": [
+      "https://REPLACE_LEADER_1.invalid:18200",
+      "https://REPLACE_LEADER_2.invalid:18200"
+    ]
+  },
+  "seal": {
+    "type": "awskms",
+    "region": "us-east-1",
+    "keyId": "REPLACE_SHARED_KMS_KEY_ID"
+  },
+  "admission": {
+    "issuedAt": "REPLACE_RFC3339_ISSUED_AT",
+    "expiresAt": "REPLACE_RFC3339_EXPIRY_WITHIN_30_MINUTES",
+    "minimumVoters": 3,
+    "requireVeilVerification": true,
+    "requireMTLS": true,
+    "requireSharedAutoUnseal": true
+  }
+}

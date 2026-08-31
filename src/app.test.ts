@@ -37,6 +37,14 @@ function config(overrides: Partial<ServiceConfig> = {}): ServiceConfig {
     rateLimitMax: 100,
     rateLimitBuckets: 100,
     maxPayloadBytes: 1024,
+    billing: {
+      mode: "disabled",
+      databaseSSL: true,
+      sessionTtlMs: 8 * 60 * 60 * 1_000,
+      usageReservationTtlMs: 5 * 60_000,
+      plans: [],
+      demoSeed: false,
+    },
     ...overrides,
   };
 }
@@ -59,6 +67,17 @@ const authorizedHeaders = {
   Authorization: "Bearer dev-only-test-token",
   "Content-Type": "application/json",
   Origin: "http://localhost:9080",
+};
+
+const assertionCredential = {
+  id: "YQ",
+  rawId: "YQ",
+  type: "public-key",
+  response: {
+    clientDataJSON: "YQ",
+    authenticatorData: "YQ",
+    signature: "YQ",
+  },
 };
 
 test("health and readiness are unauthenticated", async () => {
@@ -145,6 +164,62 @@ test("signing accepts payload and the legacy rawTx alias", async () => {
   assert.equal(response.status, 200);
   assert.equal(calls[0].payload, "aGVsbG8=");
   assert.equal(calls[0].operation, "message");
+});
+
+test("completion reconciles the requested operation before releasing output", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  let vaultOperation: "transaction" | "message" | undefined = "message";
+  const baseURL = await start({
+    async ready() {
+      return true;
+    },
+    async post(_path, body) {
+      calls.push(body);
+      return {
+        operation: vaultOperation,
+        signature: "must-not-leak-on-mismatch",
+      };
+    },
+  });
+  const complete = (
+    operation: "transaction" | "message" | undefined,
+    id: string,
+  ) =>
+    fetch(`${baseURL}/complete`, {
+      method: "POST",
+      headers: authorizedHeaders,
+      body: JSON.stringify({
+        username: "alice",
+        chain: "solana",
+        ...(operation ? { operation } : {}),
+        ceremonyId: id.repeat(32),
+        credential: assertionCredential,
+      }),
+    });
+
+  const message = await complete("message", "m");
+  assert.equal(message.status, 200);
+  assert.equal((await message.json()).signature, "must-not-leak-on-mismatch");
+  assert.equal(calls[0].operation, "message");
+
+  const mismatch = await complete("transaction", "t");
+  assert.equal(mismatch.status, 502);
+  const error = await mismatch.json();
+  assert.equal(error.error.code, "vault_operation_mismatch");
+  assert.equal(error.signature, undefined);
+  assert.equal(calls[1].operation, "transaction");
+
+  vaultOperation = undefined;
+  const missingOperation = await complete("message", "o");
+  assert.equal(missingOperation.status, 502);
+  const missingError = await missingOperation.json();
+  assert.equal(missingError.error.code, "vault_operation_mismatch");
+  assert.equal(missingError.signature, undefined);
+
+  vaultOperation = "transaction";
+  const legacyDefault = await complete(undefined, "d");
+  assert.equal(legacyDefault.status, 200);
+  assert.equal(calls[3].operation, "transaction");
 });
 
 test("validation and Vault errors have stable JSON mappings", async () => {

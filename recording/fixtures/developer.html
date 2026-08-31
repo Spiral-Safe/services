@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Spiral Safe developer dashboard fixture</title>
+    <link rel="stylesheet" href="/recording-fixtures/dashboard.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <div class="brand"><span class="mark">S</span> Spiral Safe</div>
+        <nav aria-label="Developer dashboard">
+          <button data-show="overview" aria-current="page">Overview</button>
+          <button data-show="keys" data-recording="developer-api-keys">
+            API keys
+          </button>
+          <button data-show="usage" data-recording="developer-usage">
+            Usage
+          </button>
+        </nav>
+      </aside>
+      <main>
+        <span class="fixture-banner">Fixture mode · synthetic local data</span>
+        <section data-panel="overview" data-recording="developer-overview">
+          <h1>Developer workspace</h1>
+          <p class="lede">
+            Integrate passkey-authorized signing with deterministic sandbox
+            data. No Stripe account, cloud service, production token, or real
+            wallet is connected.
+          </p>
+          <div class="grid">
+            <article class="card">
+              <span class="muted">API health</span>
+              <p class="metric">Healthy</p>
+              <span class="status">Local fixture</span>
+            </article>
+            <article class="card">
+              <span class="muted">Active wallets</span>
+              <p class="metric">24</p>
+              <span class="muted">Synthetic tenant</span>
+            </article>
+            <article class="card">
+              <span class="muted">Signed today</span>
+              <p class="metric">1,284</p>
+              <span class="muted">Deterministic sample</span>
+            </article>
+          </div>
+        </section>
+        <section class="panel" data-panel="keys" hidden>
+          <div class="panel-heading">
+            <div>
+              <h2>API keys</h2>
+              <span class="muted">All values are masked fixture aliases.</span>
+            </div>
+            <button
+              class="primary"
+              data-recording="developer-create-key"
+              data-fixture-action="Sandbox key created · value intentionally redacted"
+            >
+              Create sandbox key
+            </button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Credential</th>
+                <th>Users</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Local recorder</td>
+                <td><code data-recording-secret>REDACTED</code></td>
+                <td>demo-user</td>
+                <td><span class="status">Active</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="panel" data-panel="usage" hidden>
+          <h2>Endpoint usage</h2>
+          <p class="muted">
+            Synthetic counts for explaining the product surface; not a capacity
+            result.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th>Requests</th>
+                <th>p95 example</th>
+                <th>Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>/init</td>
+                <td>412</td>
+                <td>84 ms</td>
+                <td>0.2%</td>
+              </tr>
+              <tr>
+                <td>/signin</td>
+                <td>1,284</td>
+                <td>96 ms</td>
+                <td>0.4%</td>
+              </tr>
+              <tr>
+                <td>/complete</td>
+                <td>1,267</td>
+                <td>112 ms</td>
+                <td>0.3%</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+    <div class="toast" role="status"></div>
+    <script src="/recording-fixtures/dashboard.js"></script>
+  </body>
+</html>

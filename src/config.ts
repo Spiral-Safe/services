@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { BillingConfig, loadBillingConfig } from "./billing/config";
 
 export const SUPPORTED_CHAINS = ["solana", "ethereum"] as const;
 export type Chain = (typeof SUPPORTED_CHAINS)[number];
@@ -27,6 +28,7 @@ export interface ServiceConfig {
   rateLimitMax: number;
   rateLimitBuckets: number;
   maxPayloadBytes: number;
+  billing: BillingConfig;
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -198,6 +200,12 @@ export function loadConfig(
 ): ServiceConfig {
   const devMode = env.SERVICE_DEV_MODE === "true";
   const apiTokenHashes = parseTokens(env, devMode);
+  const billing = loadBillingConfig(env, devMode);
+  if (!devMode && billing.mode !== "disabled" && apiTokenHashes.size > 0) {
+    throw new Error(
+      "production billing mode uses database-backed API keys; remove static API token mappings",
+    );
+  }
   const allowedOrigins = new Set(
     (env.CORS_ALLOWED_ORIGINS || "")
       .split(",")
@@ -207,7 +215,7 @@ export function loadConfig(
   const vaultToken = env.VAULT_TOKEN;
   const kubernetesRole = env.VAULT_K8S_ROLE;
 
-  if (apiTokenHashes.size === 0) {
+  if (apiTokenHashes.size === 0 && billing.mode === "disabled") {
     throw new Error("API_TOKEN_HASHES, API_TOKENS, or API_TOKEN is required");
   }
   for (const principal of apiTokenHashes.values()) {
@@ -288,6 +296,7 @@ export function loadConfig(
     rateLimitMax: positiveInteger(env.RATE_LIMIT_MAX, devMode ? 300 : 60),
     rateLimitBuckets: positiveInteger(env.RATE_LIMIT_BUCKETS, 10_000),
     maxPayloadBytes: positiveInteger(env.MAX_SIGNING_PAYLOAD_BYTES, 128 * 1024),
+    billing,
   };
 }
 

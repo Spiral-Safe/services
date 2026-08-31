@@ -17,6 +17,14 @@ configMapGenerator:
       - CORS_ALLOWED_ORIGINS=https://REPLACE_ME.invalid
       - WEBAUTHN_RP_ID=REPLACE_ME.invalid
       - WEBAUTHN_RP_ORIGINS=https://REPLACE_ME.invalid
+      - BILLING_MODE=postgres
+      - BILLING_DEMO_SEED=false
+      - DATABASE_SSL=true
+      - CONSOLE_ORIGIN=https://REPLACE_ME.invalid
+      - STRIPE_CHECKOUT_INTENT_VERSION=v1
+      - METRONOME_STRIPE_INVOICING_VERIFIED=false
+      - BILLING_RESERVATION_TTL_MS=300000
+      - CONSOLE_SESSION_TTL_MS=28800000
 patches:
   - path: service-production.yaml
   - path: namespace-security.yaml

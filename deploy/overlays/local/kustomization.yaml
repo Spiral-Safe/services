@@ -12,11 +12,23 @@ configMapGenerator:
       - CORS_ALLOWED_ORIGINS=http://localhost:9080
       - WEBAUTHN_RP_ID=localhost
       - WEBAUTHN_RP_ORIGINS=http://localhost:9080
+      - BILLING_MODE=memory
+      - BILLING_DEMO_SEED=true
+      - DATABASE_SSL=false
+      - CONSOLE_ORIGIN=http://localhost:3000
 secretGenerator:
   - name: spiral-service-auth
     literals:
       - API_TOKEN=spiral-safe-local-development-only
       - API_TENANT=local
       - VAULT_TOKEN=root
+  - name: spiral-service-billing
+    literals:
+      - API_KEY_PEPPER=spiral-safe-local-api-key-pepper-only
+      - CONSOLE_SESSION_SECRET=spiral-safe-local-console-session-only
+      - DEMO_DEVELOPER_EMAIL=developer@example.test
+      - DEMO_DEVELOPER_PASSWORD=demo-developer-only
+      - DEMO_ADMIN_EMAIL=admin@example.test
+      - DEMO_ADMIN_PASSWORD=demo-admin-only
 patches:
   - path: replicas.yaml

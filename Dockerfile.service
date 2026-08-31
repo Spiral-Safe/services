@@ -12,6 +12,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --chown=node:node --from=builder /service/dist ./dist
+COPY --chown=node:node migrations ./migrations
 EXPOSE 3000
 USER node
 ENTRYPOINT ["node", "dist/index.js"]

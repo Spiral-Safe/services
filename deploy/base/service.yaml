@@ -74,6 +74,156 @@ spec:
                 configMapKeyRef:
                   name: spiral-service-config
                   key: WEBAUTHN_RP_ORIGINS
+            - name: BILLING_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: BILLING_MODE
+                  optional: true
+            - name: BILLING_DEMO_SEED
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: BILLING_DEMO_SEED
+                  optional: true
+            - name: DATABASE_SSL
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: DATABASE_SSL
+                  optional: true
+            - name: CONSOLE_ORIGIN
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: CONSOLE_ORIGIN
+                  optional: true
+            - name: BILLING_PLANS_JSON
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: BILLING_PLANS_JSON
+                  optional: true
+            - name: STRIPE_CHECKOUT_SUCCESS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: STRIPE_CHECKOUT_SUCCESS_URL
+                  optional: true
+            - name: STRIPE_CHECKOUT_CANCEL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: STRIPE_CHECKOUT_CANCEL_URL
+                  optional: true
+            - name: STRIPE_PORTAL_RETURN_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: STRIPE_PORTAL_RETURN_URL
+                  optional: true
+            - name: STRIPE_CHECKOUT_INTENT_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: STRIPE_CHECKOUT_INTENT_VERSION
+                  optional: true
+            - name: METRONOME_INGEST_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: METRONOME_INGEST_URL
+                  optional: true
+            - name: METRONOME_EXPORT_INTERVAL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: METRONOME_EXPORT_INTERVAL_MS
+                  optional: true
+            - name: METRONOME_BATCH_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: METRONOME_BATCH_SIZE
+                  optional: true
+            - name: METRONOME_STRIPE_INVOICING_VERIFIED
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: METRONOME_STRIPE_INVOICING_VERIFIED
+                  optional: true
+            - name: BILLING_RESERVATION_TTL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: BILLING_RESERVATION_TTL_MS
+                  optional: true
+            - name: CONSOLE_SESSION_TTL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: spiral-service-config
+                  key: CONSOLE_SESSION_TTL_MS
+                  optional: true
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DATABASE_URL
+                  optional: true
+            - name: API_KEY_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: API_KEY_PEPPER
+                  optional: true
+            - name: CONSOLE_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: CONSOLE_SESSION_SECRET
+                  optional: true
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: STRIPE_API_KEY
+                  optional: true
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: STRIPE_WEBHOOK_SECRET
+                  optional: true
+            - name: METRONOME_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: METRONOME_API_TOKEN
+                  optional: true
+            - name: DEMO_DEVELOPER_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DEMO_DEVELOPER_EMAIL
+                  optional: true
+            - name: DEMO_DEVELOPER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DEMO_DEVELOPER_PASSWORD
+                  optional: true
+            - name: DEMO_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DEMO_ADMIN_EMAIL
+                  optional: true
+            - name: DEMO_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: spiral-service-billing
+                  key: DEMO_ADMIN_PASSWORD
+                  optional: true
             - name: API_TOKEN_HASHES
               valueFrom:
                 secretKeyRef:

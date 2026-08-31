@@ -4,7 +4,7 @@ The default local workflow builds the Vault plugin image, API service, and
 browser demo as three Skaffold artifacts. The `production` profile deliberately
 excludes the demo and builds only Vault and the API; it renders a three-node
 Vault integrated-storage topology and requires operator-supplied identity, TLS,
-unseal, registry, and API credentials.
+unseal, registry, PostgreSQL, billing-provider, and secret inputs.
 
 ## Local development
 
@@ -51,7 +51,14 @@ short-lived Vault token; it never receives a root token.
 The manifests also provide restricted pod security settings and ingress
 NetworkPolicies. Vault egress remains provider-controlled because Kubernetes API
 and KMS endpoints differ by cluster. Restrict it to exact private endpoints once
-those addresses are known. The API's egress is restricted to DNS and Vault.
+those addresses are known. The API's checked-in egress is restricted to DNS,
+Vault, a same-namespace pod labeled
+`spiral-safe.io/billing-database=allowed` on PostgreSQL port 5432, and a
+different same-namespace pod labeled `spiral-safe.io/billing-gateway=allowed`
+on HTTPS port 443. Those selectors do not authorize a Service, another
+namespace, a managed database, Stripe, or Metronome. Supply a target-specific
+database/provider route or reviewed egress gateway; do not open generic
+Internet egress.
 
 This is a source-controlled operating baseline, not a zero-input production
 installer. Before applying it, provide all of the following:
@@ -68,23 +75,34 @@ installer. Before applying it, provide all of the following:
    `VAULT_AWSKMS_SEAL_KEY_ID`. Bind the `vault` ServiceAccount to a narrowly
    scoped cloud workload identity that can use only that key. Do not create
    long-lived AWS credential Secrets.
-5. A `spiral-service-auth` Secret whose `API_TOKEN_HASHES` key is a JSON map
-   from SHA-256 bearer-token digests to principals. Every principal must have a
-   tenant and a non-empty, explicit username allowlist, for example
-   `{"0000000000000000000000000000000000000000000000000000000000000000":{"tenant":"tenant-a","users":["alice"]}}`.
-   Replace the all-zero digest with the real token's SHA-256 digest. The
-   cleartext token is never stored in Kubernetes. No `VAULT_TOKEN` key is used
-   in production.
-6. Replace every `REPLACE_ME.invalid` in the production Kustomization with the
+5. Production values for `BILLING_PLANS_JSON`, `CONSOLE_ORIGIN`, Stripe
+   Checkout success/cancel and Portal return URLs, the reviewed Metronome
+   ingest settings, and a deliberate
+   `METRONOME_STRIPE_INVOICING_VERIFIED=true` only after an end-to-end sandbox
+   invoice proves the environment mapping. Every production plan needs a
+   distinct Stripe Product/base Price and distinct Metronome Product/rate-card
+   IDs.
+6. A `spiral-service-billing` Secret delivered through the platform's external
+   secret mechanism, with `DATABASE_URL`, independent random
+   `API_KEY_PEPPER` and `CONSOLE_SESSION_SECRET`, a least-privilege restricted
+   `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, and `METRONOME_API_TOKEN`.
+   Production billing rejects `spiral-service-auth`, `API_TOKEN_HASHES`,
+   `API_TOKENS`, and `API_TOKEN`; developer-issued PostgreSQL-backed keys are
+   used instead. No `VAULT_TOKEN` key is used by the service.
+7. A PostgreSQL migration/backup/restore plan and target-specific egress. The
+   checked-in migration init container is idempotent but currently uses the
+   same `DATABASE_URL` as the runtime; split schema-owner and service roles
+   before production.
+8. Replace every `REPLACE_ME.invalid` in the production Kustomization with the
    exact WebAuthn relying-party ID and allowed browser-extension origins. The
    checked-in browser demo is local-only and is removed from the production
    overlay. Add API ingress or Gateway resources with end-to-end TLS for your
    provider; none are guessed here.
-7. Label only the ingress-controller namespace with
+9. Label only the ingress-controller namespace with
    `spiral-safe.io/ingress-access=allowed` and only its selected pods with
    `spiral-safe.io/ingress=true`. An operator pod that must reach Vault directly
    needs `spiral-safe.io/vault-operator=true` in the `spiral-safe` namespace.
-8. Review the cluster-scoped `system:auth-delegator` binding used by Vault's
+10. Review the cluster-scoped `system:auth-delegator` binding used by Vault's
    Kubernetes auth method.
 
 Example creation shapes (substitute values through your secret manager or
@@ -101,7 +119,8 @@ kubectl -n spiral-safe create configmap vault-unseal \
   --from-literal=VAULT_AWSKMS_SEAL_KEY_ID=REPLACE_ME
 ```
 
-Create `spiral-service-auth` with the platform's external-secret mechanism, then
+Create the billing Secret and non-secret plan/URL configuration through the
+platform's secret/GitOps mechanism, leave demo seeding disabled, and then
 deploy:
 
 ```sh
@@ -126,6 +145,32 @@ The script computes the plugin checksum inside `vault-0`, registers and enables
 the plugin, enables the file audit device, creates a least-privilege policy, and
 configures the `spiral-service` Kubernetes auth role. It does not initialize,
 unseal, mint, save, or echo a root token.
+
+The service pod also remains unavailable until PostgreSQL is reachable and the
+billing migration succeeds. The init container runs
+`node dist/billing/migrate.js` as UID 10001 with a read-only root filesystem.
+It takes an advisory transaction lock and fails closed without `DATABASE_URL`.
+After the schema exists, create or rotate the first account-independent
+administrator from a protected operator shell or one-shot job:
+
+```sh
+DATABASE_URL='postgresql://...' DATABASE_SSL=true \
+  npm run billing:bootstrap-admin -- \
+  --email admin@example.com \
+  --password-file /run/secrets/spiral_admin_password
+```
+
+The CLI rejects `--password`, symlinks, non-regular files, and files larger
+than 4 KiB. It cannot promote a developer. Unmount the password file after
+use; the product still has no forced password change/reset, SSO, or MFA.
+
+For every account, allow the verified Stripe webhook to record the customer,
+subscription, plan, and current period; then provision the exact Metronome
+customer/contract/rate-card to that Stripe customer, prove a sandbox invoice,
+and record the mapping attestation from the admin console. The attestation is
+an operator assertion bound to the current Stripe customer, local plan, and
+Metronome rate card. A missing/stale mapping or missing/expired provider period
+returns 402 before Vault. No live provider charge is proven by these manifests.
 
 ## Safe node joining and scaling
 
@@ -156,6 +201,34 @@ request. Ship those files to an immutable central sink, alert on delivery and
 free-space failures, and test failover so records from every potential leader
 are collected. A persistent local audit file alone is not a complete audit
 program.
+
+## Nitro/Veil admission is a separate topology
+
+The same-image bootstrap/join scaffold in `../nitro/` applies the same quorum
+principles to an EIF: exact source and attestation verification, unique Raft
+node IDs, an odd minimum voter count, mTLS `retry_join`, a shared auto-unseal
+key identity, and post-join `raft list-peers` plus Autopilot checks. Its Veil
+listener is attestation-only. Vault API and cluster traffic use separate ports
+on Veil's full IP tunnel so the API can require an independent client
+certificate.
+
+That scaffold cannot be deployed by this Kustomization and is not an alternate
+Kubernetes overlay. Veil gives each EC2 parent/enclave pair the same
+`10.0.0.1/10.0.0.2` subnet and does not supply cross-host L4 routing. Nitro also
+does not provide durable local storage or a supported run-time file injection
+mechanism. A production enclave voter therefore remains blocked on all three of
+these external, reviewed components:
+
+1. an attestation-bound manifest, TLS, and KMS-identity delivery agent;
+2. a private per-node L4 overlay/forwarder for Vault API and Raft cluster
+   addresses; and
+3. a rollback-protected durable storage bridge with Raft-compatible fsync,
+   fencing, snapshot, restore, and crash semantics.
+
+Do not copy Kubernetes Secrets or PVC assumptions into an EIF, and do not add
+an enclave as a voter merely because its container image builds. Follow
+`../nitro/README` for the fail-closed admission sequence, configuration-only
+simulation, membership proof, and peer-removal/rollback boundaries.
 
 ## Known release blockers
 
